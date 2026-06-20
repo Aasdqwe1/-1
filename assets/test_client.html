@@ -582,6 +582,22 @@
         </div>
         <div class="status-group">
             <span id="mcpStatus" class="status-badge disconnected">未连接</span>
+            <span id="deepseekStatus" class="status-badge disconnected">DeepSeek 未连接</span>
+        </div>
+    </div>
+
+    <!-- DeepSeek 面板 -->
+    <div class="panel" id="deepseekPanel" style="display:none;">
+        <div class="panel-header">
+            <span>DeepSeek 会话</span>
+            <span class="count" id="sessionCount">0</span>
+        </div>
+        <div class="panel-body" id="sessionsPanel" style="max-height:200px; overflow-y:auto;">
+            <div style="color:#6b7a8f; text-align:center; padding:16px 0; font-size:13px;">加载中...</div>
+        </div>
+        <div class="input-area" style="padding:8px 14px 12px; gap:8px;">
+            <input type="text" id="deepseekInput" placeholder="输入消息..." style="flex:1; padding:8px 14px; border:1px solid #d1d9e6; border-radius:40px; font-size:14px;" onkeydown="handleDeepSeekKeyDown(event)">
+            <button class="btn btn-primary" style="padding:8px 16px; font-size:13px;" onclick="sendDeepSeekMessage()">发送</button>
         </div>
     </div>
 
@@ -1271,11 +1287,156 @@
         sendMessage();
     }
 
+    // ===== DeepSeek 功能 =====
+    let deepseekConnected = false;
+
+    function setDeepSeekStatus(connected, text) {
+        const el = document.getElementById('deepseekStatus');
+        if (el) {
+            el.className = 'status-badge ' + (connected ? 'connected' : 'disconnected');
+            el.textContent = text;
+        }
+    }
+
+    function showDeepSeekPanel(show) {
+        const panel = document.getElementById('deepseekPanel');
+        if (panel) panel.style.display = show ? 'block' : 'none';
+    }
+
+    async function checkDeepSeekStatus() {
+        try {
+            const url = getServerUrl();
+            const res = await fetch(url + '/api/chat/status', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: '{}'
+            });
+            const data = await res.json();
+            if (data.success && data.connected) {
+                deepseekConnected = true;
+                setDeepSeekStatus(true, 'DeepSeek 已连接');
+                showDeepSeekPanel(true);
+                loadDeepSeekSessions();
+            } else {
+                deepseekConnected = false;
+                setDeepSeekStatus(false, 'DeepSeek 未连接');
+                showDeepSeekPanel(false);
+            }
+        } catch(e) {
+            deepseekConnected = false;
+            setDeepSeekStatus(false, 'DeepSeek 未连接');
+            showDeepSeekPanel(false);
+        }
+    }
+
+    async function loadDeepSeekSessions() {
+        try {
+            const url = getServerUrl();
+            const res = await fetch(url + '/api/chat/sessions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: '{}'
+            });
+            const data = await res.json();
+            const panel = document.getElementById('sessionsPanel');
+            const countEl = document.getElementById('sessionCount');
+            if (!panel) return;
+
+            if (data.success && data.data && data.data.sessions) {
+                const sessions = data.data.sessions;
+                countEl.textContent = sessions.length;
+                if (sessions.length === 0) {
+                    panel.innerHTML = '<div style="color:#6b7a8f; text-align:center; padding:16px 0; font-size:13px;">暂无会话</div>';
+                } else {
+                    let html = '<ul class="tools-list" style="gap:6px;">';
+                    sessions.forEach(function(s) {
+                        const currentTag = s.isCurrent ? ' <span style="color:#3b82f6; font-size:11px;">✓</span>' : '';
+                        html += '<li class="tool-item" onclick="selectDeepSeekSession(\'' + s.id + '\')" style="padding:8px 12px;">' +
+                            '<div class="tool-name" style="font-size:13px;">' + escapeHtml(s.title || '未命名') + currentTag + '</div>' +
+                            (s.group ? '<div class="tool-desc" style="font-size:11px; color:#6b7a8f;">' + escapeHtml(s.group) + '</div>' : '') +
+                            '</li>';
+                    });
+                    html += '</ul>';
+                    panel.innerHTML = html;
+                }
+            } else {
+                countEl.textContent = '0';
+                panel.innerHTML = '<div style="color:#6b7a8f; text-align:center; padding:16px 0; font-size:13px;">' + (data.error || '加载失败') + '</div>';
+            }
+        } catch(e) {
+            const panel = document.getElementById('sessionsPanel');
+            if (panel) panel.innerHTML = '<div style="color:#b33a34; text-align:center; padding:16px 0; font-size:13px;">加载失败: ' + e.message + '</div>';
+        }
+    }
+
+    async function selectDeepSeekSession(sessionId) {
+        try {
+            const url = getServerUrl();
+            const res = await fetch(url + '/api/chat/select', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId })
+            });
+            const data = await res.json();
+            if (data.success) {
+                addSystemMessage('已切换到会话: ' + sessionId);
+                loadDeepSeekSessions();
+            } else {
+                addSystemMessage('切换失败: ' + (data.error || '未知错误'));
+            }
+        } catch(e) {
+            addSystemMessage('切换失败: ' + e.message);
+        }
+    }
+
+    async function sendDeepSeekMessage() {
+        const input = document.getElementById('deepseekInput');
+        if (!input) return;
+        const text = input.value.trim();
+        if (!text) return;
+        input.value = '';
+
+        addUserMessage(text);
+        setSessionStatus('等待回复...');
+
+        try {
+            const url = getServerUrl();
+            const res = await fetch(url + '/api/chat/send', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: text })
+            });
+            const data = await res.json();
+            if (data.success && data.reply) {
+                const div = document.createElement('div');
+                div.className = 'message server';
+                div.innerHTML = '<div class="message-avatar">AI</div><div class="message-content"><div class="message-label"><span class="method-badge method-response">DeepSeek</span></div><div class="message-bubble" style="white-space:pre-wrap;">' + escapeHtml(data.reply) + '</div></div>';
+                chatMessages.appendChild(div);
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            } else {
+                addSystemMessage('发送失败: ' + (data.error || '未知错误'));
+            }
+        } catch(e) {
+            addSystemMessage('发送失败: ' + e.message);
+        } finally {
+            setSessionStatus('就绪');
+        }
+    }
+
+    function handleDeepSeekKeyDown(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendDeepSeekMessage();
+        }
+    }
+
     // ===== 初始化 =====
     window.onload = function() {
         if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
             serverUrlInput.value = window.location.protocol + '//' + window.location.host;
             setTimeout(connectMcp, 400);
+            // 同时检查 DeepSeek 状态
+            setTimeout(checkDeepSeekStatus, 800);
         }
         addLog('request', '终端已就绪');
     };
