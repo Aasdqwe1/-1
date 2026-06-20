@@ -1,5 +1,6 @@
 package com.example.agenttoolbox.tools;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -49,7 +50,9 @@ public class FileWriteTool implements Tool {
             schema.put("properties", properties);
             
             String[] required = {"path", "content"};
-            schema.put("required", required);
+            JSONArray requiredArray = new JSONArray();
+            for (String r : required) requiredArray.put(r);
+            schema.put("required", requiredArray);
         } catch (JSONException e) {
             // 正常情况下不会发生
             e.printStackTrace();

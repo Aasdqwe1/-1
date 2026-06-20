@@ -7,8 +7,10 @@ import android.webkit.WebView;
 
 import org.json.JSONObject;
 
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -17,12 +19,14 @@ import java.util.concurrent.atomic.AtomicReference;
  * 负责跨 Activity 通信：
  * - McpServer（HTTP 线程）通过此类向 DeepSeekActivity 的 WebView 发送消息
  * - 等待 WebView 通过 JS 注入发消息、MutationObserver 监听到 AI 回复
- * - 回复内容通过 CountDownLatch 同步返回给 HTTP 线程
+ * - 回复内容通过 CountDownLatch / StreamCallback 同步返回给 HTTP 线程
+ *
+ * 并发安全：每个请求分配唯一 requestId，用 ConcurrentHashMap 保存
+ * 对应回调，避免多个请求相互覆盖。
  *
  * 使用方式：
- *   DeepSeekActivity.onCreate()   → DeepSeekChatBridge.register(this, webView)
- *   DeepSeekActivity.onDestroy() → DeepSeekChatBridge.unregister()
- *   HTTP 请求线程                  → DeepSeekChatBridge.sendMessage(message) → 等待回复
+ *   DeepSeekActivity.onCreate()   → DeepSeekChatBridge.register(webView)
+ *   HTTP 请求线程                  → sendMessageStream(message, callback)
  */
 public class DeepSeekChatBridge {
 
@@ -42,7 +46,14 @@ public class DeepSeekChatBridge {
     // 当前绑定的 WebView 和上下文
     private WebView boundWebView;
     private Handler mainHandler;
-    private boolean webViewLoaded;  // 已加载过 DeepSeek 页面 → 跳过重新 loadUrl
+    private boolean webViewLoaded;
+
+    // ---- 并发请求管理：每个 requestId 保存一份回调 ----
+    private final AtomicLong requestIdCounter = new AtomicLong(0);
+    private final ConcurrentHashMap<String, StreamCallback> callbacksById = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, CountDownLatch> latchById = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, AtomicReference<String>> replyById = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, AtomicReference<String>> errorById = new ConcurrentHashMap<>();
 
     // 注册 / 注销
     public synchronized void register(WebView webView) {
@@ -51,16 +62,19 @@ public class DeepSeekChatBridge {
         android.util.Log.d("DeepSeekChatBridge", "已注册 WebView: " + (webView != null ? "有效" : "null"));
     }
 
-    // Activity 返回/销毁时调用：保持 WebView 存活，仅从视图树 detach
+    // Activity 返回/销毁时调用：保持 WebView 存活
     public synchronized void detach() {
-        // 不 unregister，不 destroy — boundWebView 和 mainHandler 保持不变
-        android.util.Log.d("DeepSeekChatBridge", "detach: WebView 保持存活，HTTP API 继续可用");
+        android.util.Log.d("DeepSeekChatBridge", "detach: WebView 保持存活");
     }
 
     public synchronized void unregister() {
         this.boundWebView = null;
         this.mainHandler = null;
         this.webViewLoaded = false;
+        callbacksById.clear();
+        latchById.clear();
+        replyById.clear();
+        errorById.clear();
         android.util.Log.d("DeepSeekChatBridge", "已注销 WebView");
     }
 
@@ -70,7 +84,7 @@ public class DeepSeekChatBridge {
     public synchronized void markAsLoaded() { this.webViewLoaded = true; }
 
     /**
-     * 流式回调接口（HTTP 线程通过此接口实时收到每一段回复）
+     * 流式回调接口
      */
     public static abstract class StreamCallback {
         public abstract void onChunk(String chunk);
@@ -78,68 +92,26 @@ public class DeepSeekChatBridge {
         public abstract void onError(String error);
     }
 
-    // 流式回调（最新一个请求）
-    private volatile StreamCallback streamCallback;
-
     /**
-     * 发送聊天消息并等待回复（同步阻塞，最长 60 秒）
-     *
-     * @param message 用户输入的消息
-     * @return DeepSeek 回复文本，超时返回 null
+     * 分配一个新的请求 ID
      */
-    public String sendMessage(final String message) {
-        final WebView wb;
-        final Handler handler;
-        synchronized (this) {
-            wb = boundWebView;
-            handler = mainHandler;
-        }
-
-        if (wb == null || handler == null) {
-            android.util.Log.w("DeepSeekChatBridge", "WebView 未注册，无法发送消息");
-            return null;
-        }
-
-        final CountDownLatch latch = new CountDownLatch(1);
-        final AtomicReference<String> replyRef = new AtomicReference<String>();
-        final AtomicReference<String> errorRef = new AtomicReference<String>();
-        final long startTime = System.currentTimeMillis();
-
-        // 在主线程注入 JS：发消息 + 监听回复
-        handler.post(new Runnable() {
-				@Override
-				public void run() {
-					injectChatScript(wb, message, latch, replyRef, errorRef);
-				}
-			});
-
-        // HTTP 线程阻塞等待
-        try {
-            boolean completed = latch.await(60, TimeUnit.SECONDS);
-            if (!completed) {
-                android.util.Log.w("DeepSeekChatBridge", "等待回复超时（60s）");
-                return null;
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            android.util.Log.e("DeepSeekChatBridge", "等待被中断", e);
-            return null;
-        }
-
-        String reply = replyRef.get();
-        if (reply != null) {
-            android.util.Log.d("DeepSeekChatBridge", "收到回复（" +
-							   (System.currentTimeMillis() - startTime) + "ms）：" +
-							   reply.substring(0, Math.min(100, reply.length())) + "...");
-        }
-        return reply;
+    private String nextRequestId() {
+        return "req_" + requestIdCounter.incrementAndGet() + "_" + System.currentTimeMillis();
     }
 
     /**
-     * 发送消息并实时回调每一段回复（流式）。不阻塞调用线程。
-     *
-     * @param message 用户输入的消息
-     * @param callback 回调接口：onChunk(每段) / onDone(完整) / onError
+     * 清除某个请求的所有状态
+     */
+    private void cleanupRequest(String requestId) {
+        if (requestId == null) return;
+        callbacksById.remove(requestId);
+        latchById.remove(requestId);
+        replyById.remove(requestId);
+        errorById.remove(requestId);
+    }
+
+    /**
+     * 发送消息并实时回调每一段回复（流式）
      */
     public void sendMessageStream(final String message, final StreamCallback callback) {
         final WebView wb;
@@ -147,252 +119,233 @@ public class DeepSeekChatBridge {
         synchronized (this) {
             wb = boundWebView;
             handler = mainHandler;
-            this.streamCallback = callback;
         }
         if (wb == null || handler == null) {
             callback.onError("WebView 未注册");
             return;
         }
 
-        handler.post(new Runnable() {
-				@Override
-				public void run() {
-					// 用 latch / ref 做最终完成同步（onDeepSeekReply 里触发）
-					final CountDownLatch latch = new CountDownLatch(1);
-					final AtomicReference<String> replyRef = new AtomicReference<String>();
-					final AtomicReference<String> errorRef = new AtomicReference<String>();
-					injectChatScript(wb, message, latch, replyRef, errorRef);
+        // 分配 requestId，并保存回调
+        final String requestId = nextRequestId();
+        callbacksById.put(requestId, callback);
+        final CountDownLatch latch = new CountDownLatch(1);
+        final AtomicReference<String> replyRef = new AtomicReference<String>();
+        final AtomicReference<String> errorRef = new AtomicReference<String>();
+        latchById.put(requestId, latch);
+        replyById.put(requestId, replyRef);
+        errorById.put(requestId, errorRef);
 
-					// 后台线程等待完成，以便调 onDone / onError
-					new Thread(new Runnable() {
-						@Override
-						public void run() {
-							try {
-								boolean completed = latch.await(90, TimeUnit.SECONDS);
-								String reply = replyRef.get();
-								String err = errorRef.get();
-								StreamCallback cb = streamCallback;
-								if (!completed) {
-									if (cb != null) cb.onError("流式等待超时（90s）");
-								} else if (err != null) {
-									if (cb != null) cb.onError(err);
-								} else if (reply != null) {
-									if (cb != null) cb.onDone(reply);
-								} else {
-									if (cb != null) cb.onError("未收到回复");
-								}
-							} catch (InterruptedException e) {
-								StreamCallback cb = streamCallback;
-								if (cb != null) cb.onError("等待被中断");
-								Thread.currentThread().interrupt();
-							}
-						}
-					}).start();
-				}
-			});
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                injectChatScript(wb, requestId, message);
+
+                // 后台线程等待完成，以便调 onDone / onError
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            boolean completed = latch.await(90, TimeUnit.SECONDS);
+                            String reply = replyRef.get();
+                            String err = errorRef.get();
+                            StreamCallback cb = callbacksById.get(requestId);
+                            if (!completed) {
+                                if (cb != null) cb.onError("流式等待超时（90s）");
+                            } else if (err != null) {
+                                if (cb != null) cb.onError(err);
+                            } else if (reply != null) {
+                                if (cb != null) cb.onDone(reply);
+                            } else {
+                                if (cb != null) cb.onError("未收到回复");
+                            }
+                        } catch (InterruptedException e) {
+                            StreamCallback cb = callbacksById.get(requestId);
+                            if (cb != null) cb.onError("等待被中断");
+                            Thread.currentThread().interrupt();
+                        } finally {
+                            cleanupRequest(requestId);
+                        }
+                    }
+                }).start();
+            }
+        });
     }
 
     /**
-     * 向 WebView 注入 JS：填写输入框 → 点击发送 → 监听回复
+     * 向 WebView 注入 JS：先记录当前消息基线 → 填写输入框 → 点击发送
+     * requestId 用于让 JS 回调里带回来，确保 Java 侧路由到正确的请求
      */
-    private void injectChatScript(final WebView webView, final String message,
-                                  final CountDownLatch latch,
-                                  final AtomicReference<String> replyRef,
-                                  final AtomicReference<String> errorRef) {
-
+    private void injectChatScript(final WebView webView,
+                                   final String requestId,
+                                   final String message) {
         if (webView == null) {
-            errorRef.set("WebView 为 null");
-            latch.countDown();
+            StreamCallback cb = callbacksById.get(requestId);
+            if (cb != null) cb.onError("WebView 为 null");
+            cleanupRequest(requestId);
             return;
         }
 
-        // Step 1: 注册 MutationObserver，等待 AI 回复出现
-        // 基于实际 DeepSeek 页面 DOM：
-        //   - AI 消息内容: .ds-assistant-message-main-content
-        //   - 操作栏（回复完成标志）: .ds-button--iconLabelTertiary
-        //   - 发送按钮: div[role="button"].ds-button--primary（向上箭头 SVG）
-        //   - 暂停按钮: div[role="button"].ds-button--circle（红色方块/暂停图标）
-        //   - 打字指示器: [class*="typing"] / [class*="loading"]
+        // ========== Step 1: 监听脚本（先启动，再发送） ==========
+        // 关键修复：
+        //   - 在发送前记录当前已有 AI 消息数量（baseline）
+        //   - 只有新增的消息（index >= baseline）才被视为本次的回复
+        //   - JS 变量改为以 requestId 命名，避免多请求相互覆盖
         final String observerScript = "(function() {\n" +
-            "  window.__deepseekReplyObserved = false;\n" +
-            "  window.__deepseekLastReply = '';\n" +
-            "  window.__deepseekPendingLatch = " + latch.hashCode() + ";\n" +
-            "  window.__deepseekStartTs = Date.now();\n" +
+            "  var __rid = " + JSONObject.quote(requestId) + ";\n" +
+            "  var __prefix = 'ds_' + __rid + '_';\n" +
+            "  window.__deepseekRid = __rid;\n" +
+            "  // ===== 清理该请求遗留的旧定时器/观察器 =====\n" +
+            "  try {\n" +
+            "    if (window[__prefix + 'poll']) clearInterval(window[__prefix + 'poll']);\n" +
+            "    if (window[__prefix + 'obs']) window[__prefix + 'obs'].disconnect();\n" +
+            "  } catch(_e) {}\n" +
             "\n" +
-            "  // ======== A. 取最新一条 AI 消息的完整内容 ========\n" +
-            "  function getLatestAssistantReply() {\n" +
-            "    var aiMessages = document.querySelectorAll('.ds-assistant-message-main-content');\n" +
-            "    // 兼容：如果没有 ds- 前缀类名，退回通用选择器\n" +
-            "    if (aiMessages.length === 0) {\n" +
-            "      aiMessages = document.querySelectorAll(\n" +
+            "  // ===== A. 基线：当前已有多少条 AI 消息 =====\n" +
+            "  function getAssistantMessages() {\n" +
+            "    var list = document.querySelectorAll('.ds-assistant-message-main-content');\n" +
+            "    if (!list || list.length === 0) {\n" +
+            "      list = document.querySelectorAll(\n" +
             "        '[class*=\"assistant-message\"]', '[class*=\"prose\"]', '.whitespace-pre-wrap',\n" +
             "        '[class*=\"markdown\"]', 'article', '[role=\"article\"]'\n" +
             "      );\n" +
             "    }\n" +
-            "    if (aiMessages.length === 0) return null;\n" +
-            "    var lastMsg = aiMessages[aiMessages.length - 1];\n" +
-            "    var txt = (lastMsg.innerText || lastMsg.textContent || '').trim();\n" +
+            "    return list;\n" +
+            "  }\n" +
+            "\n" +
+            "  function getAssistantReply(el) {\n" +
+            "    if (!el) return null;\n" +
+            "    var txt = (el.innerText || el.textContent || '').trim();\n" +
             "    return txt || null;\n" +
             "  }\n" +
             "\n" +
-            "  // ======== B. 检查最新 AI 消息下方是否有操作栏（= 回复完成） ========\n" +
-            "  function isLatestReplyComplete() {\n" +
-            "    var aiMessages = document.querySelectorAll('.ds-assistant-message-main-content');\n" +
-            "    if (aiMessages.length === 0) return false;\n" +
-            "    var lastMsg = aiMessages[aiMessages.length - 1];\n" +
+            "  var baseline = getAssistantMessages().length;\n" +
+            "  var pollCount = 0;\n" +
+            "  var lastSeenText = '';\n" +
+            "  var lastReplyLen = 0;\n" +
+            "  var sameLenStable = 0;\n" +
+            "  var finished = false;\n" +
             "\n" +
-            "    // 向上找消息容器（通常是父级或祖父级），再查里面是否有 iconLabelTertiary\n" +
-            "    var container = lastMsg;\n" +
+            "  // ===== B. 检查最新一条 AI 消息是否有操作栏 =====\n" +
+            "  function isLatestReplyComplete(el) {\n" +
+            "    if (!el) return false;\n" +
+            "    var container = el;\n" +
             "    for (var i = 0; i < 5 && container && container.parentElement; i++) {\n" +
-            "      if (container.querySelector && container.querySelector('.ds-button--iconLabelTertiary')) {\n" +
-            "        return true;\n" +
-            "      }\n" +
+            "      if (container.querySelector && container.querySelector('.ds-button--iconLabelTertiary')) return true;\n" +
             "      container = container.parentElement;\n" +
             "    }\n" +
-            "    // 兼容：在整个文档末尾找 tertiary 按钮（可能是最新那条的）\n" +
+            "    // 兼容：在整个文档末尾找 tertiary 按钮\n" +
             "    var terBtns = document.querySelectorAll('.ds-button--iconLabelTertiary');\n" +
-            "    return terBtns.length > 0;\n" +
+            "    return terBtns && terBtns.length > 0;\n" +
             "  }\n" +
             "\n" +
-            "  // ======== C. 检查是否正在生成（有暂停按钮/发送按钮不是向上箭头） ========\n" +
+            "  // ===== C. 是否仍在生成 =====\n" +
             "  function isGenerating() {\n" +
-            "    // 1) 打字/loading 指示器\n" +
             "    var typing = document.querySelector('[class*=\"typing\"]') ||\n" +
             "                  document.querySelector('[class*=\"loading\"]') ||\n" +
             "                  document.querySelector('[class*=\"thinking\"]');\n" +
             "    if (typing) return true;\n" +
-            "\n" +
-            "    // 2) 发送按钮位置显示「暂停/停止」图标（不是向上箭头）\n" +
-            "    //    生成时：ds-button--circle 内的 SVG 显示红色方块 或 暂停图标\n" +
-            "    //    空闲时：ds-button--primary 内的 SVG 显示向上箭头（发送）\n" +
-            "    var sendBtn = document.querySelector('div[role=\"button\"][class*=\"ds-button--primary\"]');\n" +
             "    var circleBtns = document.querySelectorAll('div[role=\"button\"][class*=\"ds-button--circle\"]');\n" +
-            "    // 有 circle 按钮但不是 primary（通常是暂停按钮）\n" +
             "    for (var j = 0; j < circleBtns.length; j++) {\n" +
             "      var cls = circleBtns[j].getAttribute('class') || '';\n" +
-            "      if (cls.indexOf('ds-button--primary') === -1) {\n" +
-            "        // 不是 primary 的 circle 按钮 → 暂停/停止按钮\n" +
-            "        return true;\n" +
-            "      }\n" +
+            "      if (cls.indexOf('ds-button--primary') === -1) return true;\n" +
             "    }\n" +
-            "    // 3) 如果没有 primary 发送按钮 → 仍在生成\n" +
+            "    var sendBtn = document.querySelector('div[role=\"button\"][class*=\"ds-button--primary\"]');\n" +
             "    if (!sendBtn) return true;\n" +
-            "\n" +
-            "    // 4) 分析 primary 发送按钮内的 SVG：是否仍有「不是向上箭头」的图标\n" +
             "    var svg = sendBtn.querySelector('svg');\n" +
             "    if (svg) {\n" +
             "      var svgHtml = svg.innerHTML || '';\n" +
-            "      // 暂停图标：rect / 两条竖线；向上箭头：path 带 M...L... 向上三角\n" +
             "      if (svgHtml.indexOf('<rect') !== -1 ||\n" +
             "          svgHtml.indexOf('pause') !== -1 ||\n" +
             "          svgHtml.indexOf('stop') !== -1 ||\n" +
-            "          svgHtml.indexOf('M 4.88') !== -1) {\n" +
-            "        return true;\n" +
-            "      }\n" +
+            "          svgHtml.indexOf('M 4.88') !== -1) return true;\n" +
             "    }\n" +
             "    return false;\n" +
             "  }\n" +
             "\n" +
-            "  // ======== D. 轮询 + MutationObserver 双通道监听 ========\n" +
-            "  var pollCount = 0;\n" +
-            "  var lastReply = '';\n" +
-            "  var lastReplyLen = 0;\n" +
-            "  var sameLenStable = 0;  // 内容长度连续稳定多少次 → 认为完成\n" +
+            "  // ===== D. 主循环：每 500ms 检查是否新增了 AI 消息 =====\n" +
+            "  function finish(reply) {\n" +
+            "    if (finished) return;\n" +
+            "    finished = true;\n" +
+            "    if (window[__prefix + 'poll']) clearInterval(window[__prefix + 'poll']);\n" +
+            "    if (window[__prefix + 'obs']) { try { window[__prefix + 'obs'].disconnect(); } catch(_e) {} }\n" +
+            "    Android.onDeepSeekReply(__rid, reply);\n" +
+            "  }\n" +
             "\n" +
-            "  function tryFinish() {\n" +
-            "    var reply = getLatestAssistantReply();\n" +
-            "    if (!reply || reply.length < 2) return false;\n" +
+            "  function pollOnce() {\n" +
+            "    if (finished) return;\n" +
+            "    pollCount++;\n" +
+            "    var list = getAssistantMessages();\n" +
+            "    // 必须有**新增**的消息（index >= baseline）\n" +
+            "    if (list.length <= baseline) {\n" +
+            "      // 超时检查：90s 仍无新消息则失败\n" +
+            "      if (pollCount > 180) {\n" +
+            "        finish('');\n" +
+            "        Android.onDeepSeekError(__rid, '超时未捕获到新回复');\n" +
+            "      }\n" +
+            "      return;\n" +
+            "    }\n" +
+            "    var latestEl = list[list.length - 1];\n" +
+            "    var reply = getAssistantReply(latestEl);\n" +
+            "    if (!reply || reply.length < 2) return;\n" +
             "\n" +
-            "    var complete = isLatestReplyComplete();\n" +
-            "    var generating = isGenerating();\n" +
+            "    // 流式回调：内容有增长就通知\n" +
+            "    if (reply.length > lastReplyLen) {\n" +
+            "      try { Android.onDeepSeekChunk(__rid, reply); } catch(_e) {}\n" +
+            "      lastReplyLen = reply.length;\n" +
+            "    }\n" +
             "\n" +
-            "    // 内容长度稳定检测（兜底：操作栏延迟出现时仍能捕获）\n" +
-            "    if (reply.length === lastReplyLen) {\n" +
+            "    // 稳定检测\n" +
+            "    if (reply.length === lastReplyLen && reply === lastSeenText) {\n" +
             "      sameLenStable++;\n" +
             "    } else {\n" +
             "      sameLenStable = 0;\n" +
-            "      lastReplyLen = reply.length;\n" +
+            "      lastSeenText = reply;\n" +
             "    }\n" +
             "\n" +
-            "    // 判定完成：有操作栏 或 (不在生成中 且 内容长度已稳定 3 次)\n" +
-            "    if (complete || (!generating && sameLenStable >= 3 && reply !== lastReply)) {\n" +
-            "      if (reply === lastReply) return false;  // 重复不触发\n" +
-            "      lastReply = reply;\n" +
-            "      window.__deepseekLastReply = reply;\n" +
-            "      window.__deepseekReplyObserved = true;\n" +
-            "      if (window.__deepseekPollInterval) clearInterval(window.__deepseekPollInterval);\n" +
-            "      if (window.__deepseekObserver) {\n" +
-            "        try { window.__deepseekObserver.disconnect(); } catch(e) {}\n" +
-            "      }\n" +
-            "      Android.log('DeepSeek: 捕获回复（长度=' + reply.length + '，有操作栏=' + complete + '）');\n" +
-            "      Android.onDeepSeekReply(reply);\n" +
-            "      return true;\n" +
+            "    var complete = isLatestReplyComplete(latestEl);\n" +
+            "    var gen = isGenerating();\n" +
+            "    // 完成条件：有操作栏 或 (不在生成 且 长度稳定多次)\n" +
+            "    if (complete || (!gen && sameLenStable >= 3)) {\n" +
+            "      finish(reply);\n" +
+            "      return;\n" +
             "    }\n" +
-            "    return false;\n" +
+            "\n" +
+            "    // 最长 90 秒超时：有部分内容就返回已有内容\n" +
+            "    if (pollCount > 180) {\n" +
+            "      finish(reply);\n" +
+            "    }\n" +
             "  }\n" +
             "\n" +
-            "  // 轮询（主通道，最可靠）\n" +
-            "  window.__deepseekPollInterval = setInterval(function() {\n" +
-            "    pollCount++;\n" +
-            "    var reply = getLatestAssistantReply();\n" +
-            "    // 流式：每 500ms 检测到内容变化时，先把当前全量文本回调（浏览器前端可增量显示）\n" +
-            "    if (reply && reply.length > lastReplyLen && typeof Android !== 'undefined' && Android.onDeepSeekChunk) {\n" +
-            "      try { Android.onDeepSeekChunk(reply); } catch(e) {}\n" +
-            "      lastReplyLen = reply.length;\n" +
-            "    }\n" +
-            "    if (tryFinish()) return;\n" +
-            "    // 最长 90 秒超时，超时返回当前已有内容\n" +
-            "    if (pollCount > 180) {\n" +
-            "      clearInterval(window.__deepseekPollInterval);\n" +
-            "      if (window.__deepseekObserver) { try { window.__deepseekObserver.disconnect(); } catch(e) {} }\n" +
-            "      var finalReply = getLatestAssistantReply() || window.__deepseekLastReply || '';\n" +
-            "      if (finalReply && finalReply.length > 2) {\n" +
-            "        Android.log('DeepSeek: 超时返回（长度=' + finalReply.length + '）');\n" +
-            "        Android.onDeepSeekReply(finalReply);\n" +
-            "      } else {\n" +
-            "        Android.onDeepSeekError('超时未捕获到回复');\n" +
-            "      }\n" +
-            "    }\n" +
-            "  }, 500);\n" +
+            "  window[__prefix + 'poll'] = setInterval(pollOnce, 500);\n" +
             "\n" +
-            "  // MutationObserver（辅助通道，加速捕获）\n" +
-            "  window.__deepseekObserver = new MutationObserver(function(mutations) {\n" +
-            "    // 每个变化快速检查，但真正决定完成仍依赖 tryFinish 的规则\n" +
-            "    tryFinish();\n" +
+            "  // MutationObserver 辅助通道：加速检查\n" +
+            "  window[__prefix + 'obs'] = new MutationObserver(function() {\n" +
+            "    pollOnce();\n" +
             "  });\n" +
             "  var target = document.body || document.documentElement;\n" +
             "  if (target) {\n" +
-            "    window.__deepseekObserver.observe(target,\n" +
+            "    window[__prefix + 'obs'].observe(target,\n" +
             "      { childList: true, subtree: true, characterData: true, attributes: true });\n" +
             "  }\n" +
             "\n" +
-            "  return 'observer_started';\n" +
+            "  // 给发送脚本一个信号：监听已就绪\n" +
+            "  return 'observer_started_' + __rid;\n" +
             "})()";
 
-        // Step 2: 填写消息并发送
-        // 注意：DeepSeek 新版本页面
-        //   - 输入框: <textarea name="search" class="_27c9245 ...">
-        //   - 发送按钮: <div role="button" class="ds-button ds-button--primary ... _52c986b">
-        //   - 停止按钮: <div role="button" class="ds-button ...">  (生成中出现)
+        // ========== Step 2: 填写消息并发送 ==========
         final String sendScript =
             "(function() {\n" +
             "  var msg = " + JSONObject.quote(message) + ";\n" +
-            "\n" +
-            "  // ============ 1. 定位输入框 ============\n" +
             "  var textarea = document.querySelector('textarea[name=\"search\"]') ||\n" +
             "                 document.querySelector('textarea') ||\n" +
             "                 document.querySelector('[contenteditable=\"true\"]');\n" +
             "  if (!textarea) {\n" +
-            "    Android.onDeepSeekError('未找到输入框');\n" +
+            "    Android.onDeepSeekError(" + JSONObject.quote(requestId) + ", '未找到输入框');\n" +
             "    return 'no_input';\n" +
             "  }\n" +
             "  Android.log('DeepSeek: 已定位输入框');\n" +
-            "\n" +
-            "  // ============ 2. 模拟用户输入（触发 React 受控组件） ============\n" +
             "  textarea.focus();\n" +
             "  textarea.click();\n" +
-            "\n" +
-            "  // 2a. 通过 React 内部属性直接设置（React 16/17/18 兼容）\n" +
             "  var reactPropSet = false;\n" +
             "  for (var key in textarea) {\n" +
             "    if (key.indexOf('__react') === 0 || key.indexOf('__REACT') === 0) {\n" +
@@ -405,7 +358,6 @@ public class DeepSeekChatBridge {
             "          }\n" +
             "          reactPropSet = true;\n" +
             "        } else if (internal && typeof internal === 'object' && internal.stateNode) {\n" +
-            "          // React Fiber\n" +
             "          var stateNode = internal.stateNode || internal;\n" +
             "          if (stateNode && typeof stateNode._valueTracker !== 'undefined') {\n" +
             "            stateNode._valueTracker = null;\n" +
@@ -415,8 +367,6 @@ public class DeepSeekChatBridge {
             "      } catch(e) {}\n" +
             "    }\n" +
             "  }\n" +
-            "\n" +
-            "  // 2b. 通过 Object.getOwnPropertyDescriptor 设置 value（Vue/原生兼容）\n" +
             "  var descriptor = Object.getOwnPropertyDescriptor(\n" +
             "    window.HTMLTextAreaElement.prototype, 'value') ||\n" +
             "    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');\n" +
@@ -425,16 +375,12 @@ public class DeepSeekChatBridge {
             "  } else {\n" +
             "    textarea.value = msg;\n" +
             "  }\n" +
-            "\n" +
-            "  // 2c. 派发 input / change 事件\n" +
             "  ['input', 'change'].forEach(function(evName) {\n" +
             "    try {\n" +
             "      var ev = new Event(evName, { bubbles: true, cancelable: true });\n" +
             "      textarea.dispatchEvent(ev);\n" +
             "    } catch(e) {}\n" +
             "  });\n" +
-            "\n" +
-            "  // 2d. 尝试通过 InputEvent 再派发一次（部分 React 版本需要）\n" +
             "  try {\n" +
             "    if (typeof InputEvent !== 'undefined') {\n" +
             "      var ie = new InputEvent('input', {\n" +
@@ -444,16 +390,12 @@ public class DeepSeekChatBridge {
             "    }\n" +
             "  } catch(e) {}\n" +
             "\n" +
-            "  // ============ 3. 点击发送按钮 ============\n" +
             "  setTimeout(function() {\n" +
             "    var sendBtn = null;\n" +
-            "\n" +
-            "    // 策略1：DeepSeek 新版本 —— div[role=\"button\"].ds-button--primary\n" +
             "    var roleBtns = document.querySelectorAll('div[role=\"button\"]');\n" +
             "    for (var i = 0; i < roleBtns.length; i++) {\n" +
             "      var rb = roleBtns[i];\n" +
             "      var cls = rb.getAttribute('class') || '';\n" +
-            "      // 找 primary/main 发送按钮（通常是蓝色/填充色的圆形按钮）\n" +
             "      if (cls.indexOf('ds-button--primary') !== -1 ||\n" +
             "          cls.indexOf('ds-button--filled') !== -1 ||\n" +
             "          cls.indexOf('_52c986b') !== -1) {\n" +
@@ -461,8 +403,6 @@ public class DeepSeekChatBridge {
             "        break;\n" +
             "      }\n" +
             "    }\n" +
-            "\n" +
-            "    // 策略2：按文本内容找（兼容旧版本页面）\n" +
             "    if (!sendBtn) {\n" +
             "      var all = document.querySelectorAll('button, a, [role=\"button\"], div[onclick]');\n" +
             "      for (var j = 0; j < all.length; j++) {\n" +
@@ -473,8 +413,6 @@ public class DeepSeekChatBridge {
             "        }\n" +
             "      }\n" +
             "    }\n" +
-            "\n" +
-            "    // 策略3：键盘回车（最后兜底）\n" +
             "    if (!sendBtn) {\n" +
             "      try {\n" +
             "        var ke = new KeyboardEvent('keydown', {\n" +
@@ -483,68 +421,83 @@ public class DeepSeekChatBridge {
             "        });\n" +
             "        textarea.dispatchEvent(ke);\n" +
             "        Android.log('DeepSeek: 回车键发送');\n" +
-            "        return 'enter_sent';\n" +
+            "        return;\n" +
             "      } catch(e2) {\n" +
-            "        Android.onDeepSeekError('未找到发送按钮，回车发送也失败');\n" +
-            "        return 'no_send_btn';\n" +
+            "        Android.onDeepSeekError(" + JSONObject.quote(requestId) + ", '未找到发送按钮，回车发送也失败');\n" +
+            "        return;\n" +
             "      }\n" +
             "    }\n" +
-            "\n" +
             "    sendBtn.click();\n" +
-            "    Android.log('DeepSeek: 已点击发送按钮');\n" +
-            "    return 'clicked';\n" +
+            "    Android.log('DeepSeek: 已点击发送按钮 (msg=' + msg.substring(0, Math.min(20, msg.length)) + ')');\n" +
             "  }, 300);\n" +
-            "\n" +
             "  return 'preparing';\n" +
             "})()";
 
-		// 注册回调
-		deepSeekReplyCallback = replyRef;
-		deepSeekErrorCallback = errorRef;
-		deepSeekLatch = latch;
+        final Handler handler = mainHandler;
+        if (handler == null) {
+            StreamCallback cb = callbacksById.get(requestId);
+            if (cb != null) cb.onError("Handler 未初始化");
+            cleanupRequest(requestId);
+            return;
+        }
 
-		final Handler handler = mainHandler;
-		if (handler == null) {
-			errorRef.set("Handler 未初始化");
-			latch.countDown();
-			return;
-		}
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                if (boundWebView == null) {
+                    StreamCallback cb = callbacksById.get(requestId);
+                    if (cb != null) cb.onError("WebView 已释放");
+                    cleanupRequest(requestId);
+                    return;
+                }
+                // 先启动监听，再发送消息（分开调用）
+                boundWebView.evaluateJavascript(observerScript, null);
+                boundWebView.evaluateJavascript(sendScript, new ValueCallback<String>() {
+                    @Override
+                    public void onReceiveValue(String sendResult) {
+                        android.util.Log.d("DeepSeekChatBridge", "[" + requestId + "] 发送结果: " + sendResult);
+                    }
+                });
+            }
+        });
+    }
 
-		handler.post(new Runnable() {
-				@Override
-				public void run() {
-					if (boundWebView == null) {
-						errorRef.set("WebView 已释放");
-						latch.countDown();
-						return;
-					}
+    // ======================================================================
+    //  被 JavaScriptBridge 调用：把 JS 侧的事件按 requestId 路由到对应回调
+    // ======================================================================
 
-					// 先启动监听
-					DeepSeekChatBridge.this.boundWebView.evaluateJavascript(observerScript, null);
-// 再发送消息（分开调用）
-					DeepSeekChatBridge.this.boundWebView.evaluateJavascript(sendScript, new ValueCallback<String>() {
-							@Override
-							public void onReceiveValue(String sendResult) {
-								android.util.Log.d("DeepSeekChatBridge", "发送结果: " + sendResult);
-							}
-						});
+    public void onDeepSeekChunk(String requestId, String chunk) {
+        if (requestId == null) return;
+        StreamCallback cb = callbacksById.get(requestId);
+        if (cb != null) {
+            try { cb.onChunk(chunk); } catch (Exception e) { /* ignore */ }
+        }
+    }
 
-				}
-			});
-	}
+    public void onDeepSeekReply(String requestId, String reply) {
+        if (requestId == null) return;
+        CountDownLatch l = latchById.get(requestId);
+        AtomicReference<String> ref = replyById.get(requestId);
+        if (ref != null) ref.set(reply);
+        if (l != null) l.countDown();
+        android.util.Log.d("DeepSeekChatBridge",
+            "[" + requestId + "] 捕获回复 (长度=" + (reply == null ? 0 : reply.length()) + ")");
+    }
 
+    public void onDeepSeekError(String requestId, String error) {
+        if (requestId == null) return;
+        CountDownLatch l = latchById.get(requestId);
+        AtomicReference<String> errRef = errorById.get(requestId);
+        if (errRef != null) errRef.set(error);
+        if (l != null) l.countDown();
+        android.util.Log.e("DeepSeekChatBridge",
+            "[" + requestId + "] JS 错误: " + error);
+    }
 
+    // ======================================================================
+    //  工具方法
+    // ======================================================================
 
-
-    // 回调（由 JavaScriptBridge.onDeepSeekReply 调用）
-    private volatile CountDownLatch deepSeekLatch;
-    private volatile AtomicReference<String> deepSeekReplyCallback;
-    private volatile AtomicReference<String> deepSeekErrorCallback;
-
-    /**
-     * 通用：在主线程同步执行 JS 代码并等待返回值（最长 10 秒）
-     * 用于不需要 `Android.*` 回调的纯 DOM 查询场景。
-     */
     private String evaluateJsSync(final String jsCode, int timeoutSeconds) {
         final WebView wb;
         final Handler handler;
@@ -552,33 +505,24 @@ public class DeepSeekChatBridge {
             wb = boundWebView;
             handler = mainHandler;
         }
-        if (wb == null || handler == null) {
-            android.util.Log.w("DeepSeekChatBridge", "evaluateJsSync: WebView 未注册");
-            return null;
-        }
+        if (wb == null || handler == null) return null;
 
         final CountDownLatch latch = new CountDownLatch(1);
         final AtomicReference<String> resultRef = new AtomicReference<String>();
-
-        final WebView finalWb = wb;
         handler.post(new Runnable() {
-				@Override
-				public void run() {
-					finalWb.evaluateJavascript(jsCode, new ValueCallback<String>() {
-							@Override
-							public void onReceiveValue(String value) {
-								resultRef.set(value);
-								latch.countDown();
-							}
-						});
-				}
-			});
-
-        try {
-            if (!latch.await(timeoutSeconds, TimeUnit.SECONDS)) {
-                android.util.Log.w("DeepSeekChatBridge", "evaluateJsSync: 超时");
-                return null;
+            @Override
+            public void run() {
+                wb.evaluateJavascript(jsCode, new ValueCallback<String>() {
+                    @Override
+                    public void onReceiveValue(String value) {
+                        resultRef.set(value);
+                        latch.countDown();
+                    }
+                });
             }
+        });
+        try {
+            if (!latch.await(timeoutSeconds, TimeUnit.SECONDS)) return null;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return null;
@@ -588,88 +532,46 @@ public class DeepSeekChatBridge {
 
     /**
      * 获取会话列表
-     *
-     * 真实 DOM 示例：
-     *   <a class="_546d736" href="/a/chat/s/f42a7fb5-2d45-4ad4-8011-0c94f0a8e2ac">
-     *     <div class="c08e6e93">已登录DeepSeek</div>
-     *   </a>
-     *   <div class="f3d18f6a">今天</div>
-     *
-     * 返回 JSON 示例：
-     *   {
-     *     "success": true,
-     *     "total": 2,
-     *     "current": "f42a7fb5-2d45-4ad4-8011-0c94f0a8e2ac",
-     *     "sessions": [
-     *       {"id": "...", "title": "已登录DeepSeek", "group": "今天", "isCurrent": true},
-     *       ...
-     *     ]
-     *   }
      */
     public String getSessions() {
         String js =
             "(function() {\n" +
-            "  var result = {sessions: [], current: null, total: 0, _url: location.pathname};\n" +
+            "  var result = {sessions: [], current: null, total: 0};\n" +
             "  var currentPath = location.pathname || '';\n" +
-            "\n" +
-            "  // 当前会话 ID：从 URL 提取 /a/chat/s/{id}\n" +
-            "  var currentMatch = currentPath.match(/chat[\\\\/\\\\\\\\]s[\\\\/\\\\\\\\]([a-zA-Z0-9_-]+)/);\n" +
+            "  var currentMatch = currentPath.match(/chat[\\/\\\\]s[\\/\\\\]([a-zA-Z0-9_-]+)/);\n" +
             "  if (currentMatch) result.current = currentMatch[1];\n" +
-            "\n" +
-            "  // 提取所有会话项：a._546d736 或 a[href*='/a/chat/s/']\n" +
             "  var anchors = document.querySelectorAll('a[href*=\"/chat/s/\"]');\n" +
-            "  if (anchors.length === 0) {\n" +
+            "  if (!anchors || anchors.length === 0) {\n" +
             "    anchors = document.querySelectorAll('a[href*=\"chat\"]');\n" +
             "  }\n" +
-            "\n" +
-            "  // 分组标签（遇到新的分组标签后，后续会话归到该分组）\n" +
             "  var currentGroup = '';\n" +
-            "\n" +
-            "  // 为了支持分组遍历，改用树顺序遍历所有候选元素\n" +
-            "  // 策略：遍历页面中所有带 class 的元素，遇到 f3d18f6a 即切换分组，遇到 _546d736 即添加会话\n" +
             "  var all = document.querySelectorAll('[class]');\n" +
             "  for (var idx = 0; idx < all.length; idx++) {\n" +
             "    var el = all[idx];\n" +
             "    var cls = el.getAttribute('class') || '';\n" +
-            "\n" +
             "    if (el.tagName === 'A' && cls.indexOf('_546d736') !== -1) {\n" +
-            "      // 会话项\n" +
             "      var href = el.getAttribute('href') || '';\n" +
-            "      var idMatch = href.match(/chat[\\\\/\\\\\\\\]s[\\\\/\\\\\\\\]([a-zA-Z0-9_-]+)/);\n" +
+            "      var idMatch = href.match(/chat[\\/\\\\]s[\\/\\\\]([a-zA-Z0-9_-]+)/);\n" +
             "      var id = idMatch ? idMatch[1] : null;\n" +
             "      if (!id) continue;\n" +
-            "\n" +
-            "      // 标题：内部 c08e6e93 的文字，如没有则取整个链接的 innerText\n" +
             "      var titleDiv = el.querySelector('[class*=\"c08e6e93\"]');\n" +
             "      var title = titleDiv ? (titleDiv.innerText || titleDiv.textContent || '').trim()\n" +
-            "                           : (el.innerText || el.textContent || '').trim();\n" +
-            "\n" +
+            "                            : (el.innerText || el.textContent || '').trim();\n" +
             "      result.sessions.push({\n" +
-            "        id: id,\n" +
-            "        title: title,\n" +
-            "        group: currentGroup || '',\n" +
+            "        id: id, title: title, group: currentGroup || '',\n" +
             "        isCurrent: (id === result.current)\n" +
             "      });\n" +
             "    } else if (el.tagName === 'DIV' && cls.indexOf('f3d18f6a') !== -1) {\n" +
-            "      // 分组标签\n" +
             "      currentGroup = (el.innerText || el.textContent || '').trim();\n" +
             "    }\n" +
             "  }\n" +
-            "\n" +
             "  result.total = result.sessions.length;\n" +
             "  return JSON.stringify(result);\n" +
             "})()";
-
         String raw = evaluateJsSync(js, 10);
         if (raw == null) return null;
-        // evaluateJavascript 返回 JSON 字符串（带外层双引号），需要解包
         try {
-            // Android.evaluateJavascript 会把 JS 返回值序列化成 JSON 值；
-            // 当 JS 返回 JSON.stringify(...) 时，Java 端拿到的是带外层双引号的字符串
-            // 例如 "\"{\\\"sessions\\\":[...]}\""
             if (raw.length() >= 2 && raw.startsWith("\"") && raw.endsWith("\"")) {
-                // 把 raw 当作 JSON 字符串来解析，构造一个 JSON 数组来解包
-                // 这样才能真正去掉外层双引号并反转义内部字符
                 String jsonArrayStr = "[" + raw + "]";
                 org.json.JSONArray arr = new org.json.JSONArray(jsonArrayStr);
                 return arr.getString(0);
@@ -681,13 +583,19 @@ public class DeepSeekChatBridge {
     }
 
     /**
-     * 切换会话：点击对应会话 ID 的链接
-     *
-     * @param sessionId 目标会话 ID
-     * @return true 表示找到了元素并点击成功
+     * 切换会话：点击对应会话项后，等待 URL 发生变化才算完成
      */
     public boolean selectSession(final String sessionId) {
         if (sessionId == null || sessionId.isEmpty()) return false;
+
+        final String getUrlJs = "(function(){ return location.pathname || ''; })()";
+        String oldUrl = evaluateJsSync(getUrlJs, 5);
+        if (oldUrl != null && oldUrl.length() >= 2 && oldUrl.startsWith("\"")) {
+            try {
+                org.json.JSONArray arr = new org.json.JSONArray("[" + oldUrl + "]");
+                oldUrl = arr.getString(0);
+            } catch (Exception ignored) {}
+        }
 
         String js =
             "(function() {\n" +
@@ -707,167 +615,73 @@ public class DeepSeekChatBridge {
 
         String raw = evaluateJsSync(js, 10);
         if (raw == null) return false;
-        return raw.contains("ok");
+        if (!raw.contains("ok")) return false;
+
+        // 等待最多 5 秒，直到 URL 发生变化并包含新 sessionId
+        for (int attempt = 0; attempt < 10; attempt++) {
+            try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+            String currentUrl = evaluateJsSync(getUrlJs, 3);
+            if (currentUrl != null && currentUrl.contains(sessionId)) {
+                return true;
+            }
+        }
+        return true; // 即使没检测到 URL 变化，也认为点击成功
     }
 
     /**
-     * 创建新会话：在 DeepSeek 页面点击"新建对话"
+     * 创建新会话：点击新建按钮后等待 URL 变化
      */
     public boolean newSession() {
         String js =
             "(function() {\n" +
-            "  // 策略1: 直接通过 URL 跳转（最可靠）\n" +
             "  try {\n" +
-            "    // DeepSeek 新对话通常在 /chat 路径\n" +
             "    var currentPath = location.pathname;\n" +
             "    if (currentPath.indexOf('/chat') === -1) {\n" +
             "      location.href = '/chat';\n" +
             "      return 'ok_navigate';\n" +
             "    }\n" +
             "  } catch(e) {}\n" +
-            "\n" +
-            "  // 策略2: 查找含 '新建'/'新对话'/'new chat' 的按钮/元素\n" +
+            "  // 策略：侧边栏新建 / plus按钮 / 链接\n" +
             "  var allClickable = document.querySelectorAll('button, a, [role=\"button\"], div[onclick]');\n" +
             "  for (var i = 0; i < allClickable.length; i++) {\n" +
-            "    var el = allClickable[i];\n" +
-            "    var txt = (el.innerText || el.textContent || '').trim().toLowerCase();\n" +
-            "    var aria = (el.getAttribute('aria-label') || '').toLowerCase();\n" +
-            "    var title = (el.getAttribute('title') || '').toLowerCase();\n" +
-            "    if (txt.indexOf('新建') !== -1 || txt.indexOf('新对话') !== -1 || \n" +
+            "    var txt = (allClickable[i].innerText || allClickable[i].textContent || '').trim().toLowerCase();\n" +
+            "    var aria = (allClickable[i].getAttribute('aria-label') || '').toLowerCase();\n" +
+            "    var title = (allClickable[i].getAttribute('title') || '').toLowerCase();\n" +
+            "    if (txt.indexOf('新建') !== -1 || txt.indexOf('新对话') !== -1 ||\n" +
             "        txt.indexOf('new chat') !== -1 || txt.indexOf('new conversation') !== -1 ||\n" +
             "        aria.indexOf('new chat') !== -1 || aria.indexOf('新建') !== -1 ||\n" +
             "        title.indexOf('new chat') !== -1 || title.indexOf('新建') !== -1) {\n" +
-            "      // 优先选择侧边栏的元素（在左侧区域）\n" +
-            "      var rect = el.getBoundingClientRect();\n" +
-            "      if (rect.left < window.innerWidth * 0.3) {\n" +
-            "        el.click();\n" +
+            "      var rect = allClickable[i].getBoundingClientRect();\n" +
+            "      if (rect.left < (window.innerWidth * 0.3) ||\n" +
+            "          allClickable[i].tagName === 'A' ||\n" +
+            "          txt.length < 10) {\n" +
+            "        allClickable[i].click();\n" +
             "        return 'ok_sidebar';\n" +
             "      }\n" +
             "    }\n" +
             "  }\n" +
-            "\n" +
-            "  // 策略3: 查找加号图标（SVG 或 + 字符）\n" +
             "  var svgs = document.querySelectorAll('svg');\n" +
             "  for (var k = 0; k < svgs.length; k++) {\n" +
-            "    var svg = svgs[k];\n" +
-            "    var svgParent = svg.closest('button, a, [role=\"button\"], div');\n" +
-            "    if (svgParent) {\n" +
-            "      var sRect = svgParent.getBoundingClientRect();\n" +
-            "      // 优先选择左侧的加号图标\n" +
-            "      if (sRect.left < window.innerWidth * 0.3 && sRect.top < window.innerHeight * 0.3) {\n" +
-            "        svgParent.click();\n" +
+            "    var sp = svgs[k].closest('button, a, [role=\"button\"], div');\n" +
+            "    if (sp) {\n" +
+            "      var r2 = sp.getBoundingClientRect();\n" +
+            "      if (r2.left < window.innerWidth * 0.3 && r2.top < window.innerHeight * 0.3) {\n" +
+            "        sp.click();\n" +
             "        return 'ok_svg_plus';\n" +
             "      }\n" +
             "    }\n" +
             "  }\n" +
-            "\n" +
-            "  // 策略4: 查找包含 + 号的元素\n" +
-            "  var allElements = document.querySelectorAll('*');\n" +
-            "  for (var m = 0; m < allElements.length; m++) {\n" +
-            "    var elem = allElements[m];\n" +
-            "    if (elem.children && elem.children.length > 0) continue; // 只看叶子节点\n" +
-            "    var text = (elem.textContent || '').trim();\n" +
-            "    if (text === '+' || text === '＋') {\n" +
-            "      var clickable = elem.closest('button, a, [role=\"button\"], div[onclick]');\n" +
-            "      if (clickable) {\n" +
-            "        var eRect = clickable.getBoundingClientRect();\n" +
-            "        if (eRect.left < window.innerWidth * 0.3) {\n" +
-            "          clickable.click();\n" +
-            "          return 'ok_plus_char';\n" +
-            "        }\n" +
-            "      }\n" +
-            "    }\n" +
-            "  }\n" +
-            "\n" +
-            "  // 策略5: 查找侧边栏顶部第一个可点击元素（通常是新建按钮）\n" +
-            "  var sidebar = document.querySelector('nav, aside, [class*=\"sidebar\"], [class*=\"side\"]');\n" +
-            "  if (sidebar) {\n" +
-            "    var firstBtn = sidebar.querySelector('button, a, [role=\"button\"]');\n" +
-            "    if (firstBtn) {\n" +
-            "      firstBtn.click();\n" +
-            "      return 'ok_sidebar_first';\n" +
-            "    }\n" +
-            "  }\n" +
-            "\n" +
-            "  // 策略6: 查找 a 标签且 href 包含 chat\n" +
-            "  var chatLinks = document.querySelectorAll('a[href*=\"chat\"]');\n" +
-            "  for (var n = 0; n < chatLinks.length; n++) {\n" +
-            "    var href = chatLinks[n].getAttribute('href') || '';\n" +
-            "    // 排除具体的会话链接，找根路径的\n" +
-            "    if (href === '/chat' || href === '/a/chat' || href.endsWith('/chat')) {\n" +
-            "      chatLinks[n].click();\n" +
-            "      return 'ok_chat_link';\n" +
-            "    }\n" +
-            "  }\n" +
-            "\n" +
-            "  // 策略7: 兜底 - 直接修改 URL\n" +
-            "  try {\n" +
-            "    // 尝试跳转到新对话页面\n" +
-            "    if (location.pathname !== '/chat' && location.pathname !== '/a/chat') {\n" +
-            "      location.pathname = '/chat';\n" +
-            "      return 'ok_path_change';\n" +
-            "    }\n" +
-            "  } catch(e) {}\n" +
-            "\n" +
+            "  try { location.pathname = '/chat'; return 'ok_path_change'; } catch(e) {}\n" +
             "  return 'not_found';\n" +
             "})()";
+
         String raw = evaluateJsSync(js, 10);
         if (raw == null) return false;
+
+        // 等待最多 3 秒让页面完成跳转
+        for (int attempt = 0; attempt < 6; attempt++) {
+            try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+        }
         return raw.contains("ok");
-    }
-
-    /**
-     * 被 JavaScriptBridge 回调：流式回复的中间片段
-     */
-    public void onDeepSeekChunk(String chunk) {
-        StreamCallback cb = streamCallback;
-        if (cb != null) {
-            try { cb.onChunk(chunk); } catch (Exception e) { /* ignore */ }
-        }
-    }
-
-    /**
-     * 被 JavaScriptBridge 回调：AI 回复已捕获
-     */
-    public void onDeepSeekReply(String reply) {
-        CountDownLatch l = deepSeekLatch;
-        AtomicReference<String> ref = deepSeekReplyCallback;
-        if (l != null && ref != null) {
-            ref.set(reply);
-            l.countDown();
-        }
-        // 流式场景：通知 onDone
-        StreamCallback cb = streamCallback;
-        if (cb != null) {
-            try { cb.onDone(reply); } catch (Exception e) { /* ignore */ }
-        }
-        // 重置状态
-        deepSeekLatch = null;
-        deepSeekReplyCallback = null;
-        deepSeekErrorCallback = null;
-        streamCallback = null;
-    }
-
-    /**
-     * 被 JavaScriptBridge 回调：发生错误
-     */
-    public void onDeepSeekError(String error) {
-        android.util.Log.e("DeepSeekChatBridge", "WebView 错误: " + error);
-        CountDownLatch l = deepSeekLatch;
-        AtomicReference<String> ref = deepSeekErrorCallback;
-        if (l != null && ref != null) {
-            ref.set(error);
-            l.countDown();
-        }
-        // 流式场景：通知 onError
-        StreamCallback cb = streamCallback;
-        if (cb != null) {
-            try { cb.onError(error); } catch (Exception e) { /* ignore */ }
-        }
-        // 重置状态
-        deepSeekLatch = null;
-        deepSeekReplyCallback = null;
-        deepSeekErrorCallback = null;
-        streamCallback = null;
     }
 }

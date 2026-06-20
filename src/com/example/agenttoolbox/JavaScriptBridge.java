@@ -60,39 +60,70 @@ public class JavaScriptBridge {
     
     /**
      * JS 调用：DeepSeek AI 回复已捕获（由 WebView 注入的 JS 调用）
+     * 新格式：带 requestId 路由到对应请求，避免多会话消息错乱
      */
     @JavascriptInterface
-    public void onDeepSeekReply(final String reply) {
+    public void onDeepSeekReply(final String requestIdOrReply, final String replyOrNull) {
+        final String requestId;
+        final String reply;
+        // 兼容：如果只传了一个参数，第二个参数为 null → 按旧格式处理
+        if (replyOrNull == null || replyOrNull.isEmpty()) {
+            requestId = null;
+            reply = requestIdOrReply;
+        } else {
+            requestId = requestIdOrReply;
+            reply = replyOrNull;
+        }
         handler.post(new Runnable() {
             @Override
             public void run() {
-                DeepSeekChatBridge.getInstance().onDeepSeekReply(reply);
+                DeepSeekChatBridge.getInstance().onDeepSeekReply(requestId, reply);
             }
         });
     }
 
     /**
      * JS 调用：DeepSeek 流式回复的中间片段（每 500ms 触发一次）
+     * 新格式：带 requestId 路由
      */
     @JavascriptInterface
-    public void onDeepSeekChunk(final String chunk) {
+    public void onDeepSeekChunk(final String requestIdOrChunk, final String chunkOrNull) {
+        final String requestId;
+        final String chunk;
+        if (chunkOrNull == null || chunkOrNull.isEmpty()) {
+            requestId = null;
+            chunk = requestIdOrChunk;
+        } else {
+            requestId = requestIdOrChunk;
+            chunk = chunkOrNull;
+        }
         handler.post(new Runnable() {
             @Override
             public void run() {
-                DeepSeekChatBridge.getInstance().onDeepSeekChunk(chunk);
+                DeepSeekChatBridge.getInstance().onDeepSeekChunk(requestId, chunk);
             }
         });
     }
 
     /**
      * JS 调用：DeepSeek 聊天过程发生错误
+     * 新格式：带 requestId 路由
      */
     @JavascriptInterface
-    public void onDeepSeekError(final String error) {
+    public void onDeepSeekError(final String requestIdOrError, final String errorOrNull) {
+        final String requestId;
+        final String error;
+        if (errorOrNull == null || errorOrNull.isEmpty()) {
+            requestId = null;
+            error = requestIdOrError;
+        } else {
+            requestId = requestIdOrError;
+            error = errorOrNull;
+        }
         handler.post(new Runnable() {
             @Override
             public void run() {
-                DeepSeekChatBridge.getInstance().onDeepSeekError(error);
+                DeepSeekChatBridge.getInstance().onDeepSeekError(requestId, error);
             }
         });
     }
