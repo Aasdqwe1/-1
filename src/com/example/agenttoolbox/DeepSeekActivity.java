@@ -274,6 +274,11 @@ public class DeepSeekActivity extends Activity {
 
         setStatus("正在新建会话...");
 
+        if (webView == null) {
+            setStatus("WebView 已销毁，请重启应用");
+            return;
+        }
+
         // 尝试通过 JavaScript 点击新会话按钮
         // 如果失败，就重新加载页面
         webView.evaluateJavascript(
@@ -313,6 +318,10 @@ public class DeepSeekActivity extends Activity {
      * 页面中不存在 data-testid 属性，登录页面路径为 /sign_in。
      */
     private void checkLoginStatus() {
+        if (webView == null) {
+            setStatus("WebView 已销毁，跳过登录检测");
+            return;
+        }
         webView.evaluateJavascript(
             "(function() {" +
             "  var result = {" +
@@ -848,6 +857,10 @@ public class DeepSeekActivity extends Activity {
      * 获取当前会话信息
      */
     public void getCurrentSession() {
+        if (webView == null) {
+            setStatus("WebView 已销毁");
+            return;
+        }
         webView.evaluateJavascript(
             "(function() {" +
             "  // 获取当前会话 ID" +
