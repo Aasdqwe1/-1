@@ -81,11 +81,11 @@ public class DeepSeekActivity extends Activity {
         btnRefresh = (Button) findViewById(R.id.btnRefresh);
         btnExtractHtml = (Button) findViewById(R.id.btnExtractHtml);
 
-        // 返回按钮
+        // 返回按钮 —— 仅退到后台，不结束进程（保持 HTTP 聊天端点可用）
         btnBack.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                finish();
+                moveTaskToBack(true);
             }
         });
 
@@ -885,32 +885,33 @@ public class DeepSeekActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (webView.canGoBack()) {
+        if (webView != null && webView.canGoBack()) {
             webView.goBack();
         } else {
-            super.onBackPressed();
+            // 退到后台，保持 WebView 和 HTTP 聊天端点存活
+            moveTaskToBack(true);
         }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        webView.onResume();
+        if (webView != null) webView.onResume();
         updateMcpStatus();
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        webView.onPause();
+        if (webView != null) webView.onPause();
     }
 
     @Override
     protected void onDestroy() {
-        // 注销 HTTP 聊天桥接
-        DeepSeekChatBridge.getInstance().unregister();
-
-        if (webView != null) {
+        // 不在 onDestroy 中强制清理 WebView：保持 HTTP 聊天端点持续可用
+        // 仅在真正主动销毁时执行（isFinishing 会返回 true）
+        if (isFinishing() && webView != null) {
+            DeepSeekChatBridge.getInstance().unregister();
             webView.stopLoading();
             webView.clearHistory();
             webView.removeAllViews();
