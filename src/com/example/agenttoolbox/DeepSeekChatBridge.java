@@ -129,39 +129,66 @@ public class DeepSeekChatBridge {
         }
 
         // Step 1: 注册 MutationObserver，等待 AI 回复出现
+        // 重置标志，确保每次发送都有新的监听
         final String observerScript = "(function() {\n" +
-            "  if (window.__deepseekReplyObserved) return;\n" +
-            "  window.__deepseekReplyObserved = true;\n" +
+            "  window.__deepseekReplyObserved = false;\n" +
             "  window.__deepseekLastReply = '';\n" +
             "  window.__deepseekPendingLatch = " + latch.hashCode() + ";\n" +
             "\n" +
             "  // 查找最新 assistant 消息的函数\n" +
             "  function getLatestAssistantReply() {\n" +
-            "    // 尝试多种选择器找 AI 回复\n" +
+            "    // 策略1：找所有看起来像 AI 回复的元素（按 DOM 顺序取最后一个）\n" +
             "    var candidates = document.querySelectorAll(\n" +
-            "      '[class*=\"markdown\"]', '[class*=\"assistant\"]', '[class*=\"prose\"]',\n" +
-            "      '.message-body', '.chat-message', '[data-testid*=\"assistant\"]',\n" +
-            "      '[role=\"article\"]', 'article', '.whitespace-pre-wrap'\n" +
+            "      '[class*=\"prose\"]', '[class*=\"markdown\"]', '[class*=\"assistant\"]',\n" +
+            "      '.whitespace-pre-wrap', '[role=\"article\"]', 'article',\n" +
+            "      '.message-body', '.chat-message'\n" +
             "    );\n" +
+            "\n" +
             "    var texts = [];\n" +
             "    for (var i = 0; i < candidates.length; i++) {\n" +
             "      var el = candidates[i];\n" +
-            "      // 过滤掉用户消息（包含用户头像、用户相关 class）\n" +
+            "      // 过滤掉在用户消息区域内的元素（通过父级 class 判断）\n" +
             "      var parent = el.closest ? el.closest('[class*=\"user\"]') : null;\n" +
             "      if (parent) continue;\n" +
+            "      // 排除输入框本身\n" +
+            "      if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') continue;\n" +
             "      var txt = (el.innerText || el.textContent || '').trim();\n" +
-            "      if (txt && txt.length > 10) texts.push(txt);\n" +
+            "      if (txt && txt.length > 5) texts.push(txt);\n" +
             "    }\n" +
+            "\n" +
+            "    // 策略2：取所有 role=article 的元素，或取最深层的 prose 文本\n" +
+            "    if (texts.length === 0) {\n" +
+            "      var articles = document.querySelectorAll('[role=\"article\"], article');\n" +
+            "      for (var k = 0; k < articles.length; k++) {\n" +
+            "        var artTxt = (articles[k].innerText || articles[k].textContent || '').trim();\n" +
+            "        if (artTxt && artTxt.length > 10) texts.push(artTxt);\n" +
+            "      }\n" +
+            "    }\n" +
+            "\n" +
             "    if (texts.length === 0) return null;\n" +
             "    return texts[texts.length - 1]; // 最后一条（最新）\n" +
             "  }\n" +
             "\n" +
-            "  // 检查是否已经在生成回复（检查停止按钮 / 加载状态）\n" +
+            "  // 检查是否在生成回复（DeepSeek 新版本：生成时出现停止按钮，发送按钮消失）\n" +
             "  function isGenerating() {\n" +
+            "    // 策略A：生成中出现停止按钮（div[role=\"button\"], 非 primary）\n" +
             "    var stopBtn = document.querySelector('[class*=\"stop\"]');\n" +
+            "    // 策略B：发送按钮是否存在（不存在=正在生成）\n" +
+            "    var sendBtn = document.querySelector('div[role=\"button\"][class*=\"ds-button--primary\"]');\n" +
+            "    var hasSecondaryBtn = false;\n" +
+            "    var roleBtns = document.querySelectorAll('div[role=\"button\"]');\n" +
+            "    for (var i = 0; i < roleBtns.length; i++) {\n" +
+            "      var c = roleBtns[i].getAttribute('class') || '';\n" +
+            "      if (c.indexOf('ds-button--secondary') !== -1 || c.indexOf('ds-button--ghost') !== -1) {\n" +
+            "        hasSecondaryBtn = true;\n" +
+            "        break;\n" +
+            "      }\n" +
+            "    }\n" +
+            "    // 策略C：loading / thinking\n" +
             "    var loading = document.querySelector('[class*=\"loading\"]');\n" +
             "    var thinking = document.querySelector('[class*=\"thinking\"]');\n" +
-            "    return !!(stopBtn || loading || thinking);\n" +
+            "\n" +
+            "    return !!(stopBtn || (!sendBtn && hasSecondaryBtn) || loading || thinking);\n" +
             "  }\n" +
             "\n" +
             "  // 主动轮询（兜底，确保 observer 漏掉时也能捕获）\n" +
@@ -212,90 +239,129 @@ public class DeepSeekChatBridge {
             "})()";
 
         // Step 2: 填写消息并发送
+        // 注意：DeepSeek 新版本页面
+        //   - 输入框: <textarea name="search" class="_27c9245 ...">
+        //   - 发送按钮: <div role="button" class="ds-button ds-button--primary ... _52c986b">
+        //   - 停止按钮: <div role="button" class="ds-button ...">  (生成中出现)
         final String sendScript =
             "(function() {\n" +
             "  var msg = " + JSONObject.quote(message) + ";\n" +
             "\n" +
-            "  // 查找输入框\n" +
-            "  var textarea = document.querySelector('textarea');\n" +
-            "  var editable = document.querySelector('[contenteditable=\"true\"]');\n" +
-            "  var input = textarea || editable;\n" +
-            "\n" +
-            "  if (!input) {\n" +
-            "    Android.onDeepSeekError('未找到输入框（textarea 或 contenteditable）');\n" +
+            "  // ============ 1. 定位输入框 ============\n" +
+            "  var textarea = document.querySelector('textarea[name=\"search\"]') ||\n" +
+            "                 document.querySelector('textarea') ||\n" +
+            "                 document.querySelector('[contenteditable=\"true\"]');\n" +
+            "  if (!textarea) {\n" +
+            "    Android.onDeepSeekError('未找到输入框');\n" +
             "    return 'no_input';\n" +
             "  }\n" +
+            "  Android.log('DeepSeek: 已定位输入框');\n" +
             "\n" +
-            "  // 聚焦并填入文字\n" +
-            "  input.focus();\n" +
-            "  input.click();\n" +
+            "  // ============ 2. 模拟用户输入（触发 React 受控组件） ============\n" +
+            "  textarea.focus();\n" +
+            "  textarea.click();\n" +
             "\n" +
-            "  // 填入消息（模拟用户输入，触发 Vue/React 响应）\n" +
-            "  var nativeInputValueSetter =\n" +
-            "    Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value') ||\n" +
-            "    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');\n" +
-            "  if (nativeInputValueSetter) {\n" +
-            "    nativeInputValueSetter.set.call(input, msg);\n" +
-            "  } else {\n" +
-            "    input.value = msg;\n" +
+            "  // 2a. 通过 React 内部属性直接设置（React 16/17/18 兼容）\n" +
+            "  var reactPropSet = false;\n" +
+            "  for (var key in textarea) {\n" +
+            "    if (key.indexOf('__react') === 0 || key.indexOf('__REACT') === 0) {\n" +
+            "      try {\n" +
+            "        var internal = textarea[key];\n" +
+            "        if (internal && typeof internal.memoizedProps === 'object') {\n" +
+            "          internal.memoizedProps.value = msg;\n" +
+            "          if (typeof internal.memoizedProps.onChange === 'function') {\n" +
+            "            internal.memoizedProps.onChange({ target: { value: msg } });\n" +
+            "          }\n" +
+            "          reactPropSet = true;\n" +
+            "        } else if (internal && typeof internal === 'object' && internal.stateNode) {\n" +
+            "          // React Fiber\n" +
+            "          var stateNode = internal.stateNode || internal;\n" +
+            "          if (stateNode && typeof stateNode._valueTracker !== 'undefined') {\n" +
+            "            stateNode._valueTracker = null;\n" +
+            "          }\n" +
+            "          reactPropSet = true;\n" +
+            "        }\n" +
+            "      } catch(e) {}\n" +
+            "    }\n" +
             "  }\n" +
             "\n" +
-            "  // 触发 input 事件\n" +
-            "  var inputEvent = new Event('input', { bubbles: true });\n" +
-            "  input.dispatchEvent(inputEvent);\n" +
+            "  // 2b. 通过 Object.getOwnPropertyDescriptor 设置 value（Vue/原生兼容）\n" +
+            "  var descriptor = Object.getOwnPropertyDescriptor(\n" +
+            "    window.HTMLTextAreaElement.prototype, 'value') ||\n" +
+            "    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');\n" +
+            "  if (descriptor && descriptor.set) {\n" +
+            "    descriptor.set.call(textarea, msg);\n" +
+            "  } else {\n" +
+            "    textarea.value = msg;\n" +
+            "  }\n" +
             "\n" +
-            "  // 触发 change 事件\n" +
-            "  var changeEvent = new Event('change', { bubbles: true });\n" +
-            "  input.dispatchEvent(changeEvent);\n" +
+            "  // 2c. 派发 input / change 事件\n" +
+            "  ['input', 'change'].forEach(function(evName) {\n" +
+            "    try {\n" +
+            "      var ev = new Event(evName, { bubbles: true, cancelable: true });\n" +
+            "      textarea.dispatchEvent(ev);\n" +
+            "    } catch(e) {}\n" +
+            "  });\n" +
             "\n" +
-            "  // 延迟一点再点击发送按钮\n" +
+            "  // 2d. 尝试通过 InputEvent 再派发一次（部分 React 版本需要）\n" +
+            "  try {\n" +
+            "    if (typeof InputEvent !== 'undefined') {\n" +
+            "      var ie = new InputEvent('input', {\n" +
+            "        bubbles: true, cancelable: true, data: msg, inputType: 'insertText'\n" +
+            "      });\n" +
+            "      textarea.dispatchEvent(ie);\n" +
+            "    }\n" +
+            "  } catch(e) {}\n" +
+            "\n" +
+            "  // ============ 3. 点击发送按钮 ============\n" +
             "  setTimeout(function() {\n" +
-            "    // 查找发送按钮\n" +
             "    var sendBtn = null;\n" +
             "\n" +
-            "    // 策略1：找 submit / 发送 相关按钮\n" +
-            "    var buttons = document.querySelectorAll('button');\n" +
-            "    for (var i = 0; i < buttons.length; i++) {\n" +
-            "      var txt = (buttons[i].innerText || '').trim();\n" +
-            "      if (txt.indexOf('发送') >= 0 || txt.indexOf('Send') >= 0 ||\n" +
-            "          txt.indexOf('提交') >= 0 || txt.indexOf('Submit') >= 0 ||\n" +
-            "          buttons[i].getAttribute('class') &&\n" +
-            "          buttons[i].getAttribute('class').indexOf('send') >= 0) {\n" +
-            "        sendBtn = buttons[i];\n" +
+            "    // 策略1：DeepSeek 新版本 —— div[role=\"button\"].ds-button--primary\n" +
+            "    var roleBtns = document.querySelectorAll('div[role=\"button\"]');\n" +
+            "    for (var i = 0; i < roleBtns.length; i++) {\n" +
+            "      var rb = roleBtns[i];\n" +
+            "      var cls = rb.getAttribute('class') || '';\n" +
+            "      // 找 primary/main 发送按钮（通常是蓝色/填充色的圆形按钮）\n" +
+            "      if (cls.indexOf('ds-button--primary') !== -1 ||\n" +
+            "          cls.indexOf('ds-button--filled') !== -1 ||\n" +
+            "          cls.indexOf('_52c986b') !== -1) {\n" +
+            "        sendBtn = rb;\n" +
             "        break;\n" +
             "      }\n" +
             "    }\n" +
             "\n" +
-            "    // 策略2：找输入框同容器下的最后一个可用按钮\n" +
+            "    // 策略2：按文本内容找（兼容旧版本页面）\n" +
             "    if (!sendBtn) {\n" +
-            "      var container = input.closest('div');\n" +
-            "      if (container) {\n" +
-            "        var btns = container.querySelectorAll('button');\n" +
-            "        for (var j = btns.length - 1; j >= 0; j--) {\n" +
-            "          if (!btns[j].disabled) { sendBtn = btns[j]; break; }\n" +
+            "      var all = document.querySelectorAll('button, a, [role=\"button\"], div[onclick]');\n" +
+            "      for (var j = 0; j < all.length; j++) {\n" +
+            "        var tt = (all[j].innerText || all[j].textContent || '').trim();\n" +
+            "        if (tt && (tt.indexOf('发送') !== -1 || tt.indexOf('Send') !== -1)) {\n" +
+            "          sendBtn = all[j];\n" +
+            "          break;\n" +
             "        }\n" +
             "      }\n" +
             "    }\n" +
             "\n" +
-            "    // 策略3：键盘回车发送\n" +
+            "    // 策略3：键盘回车（最后兜底）\n" +
             "    if (!sendBtn) {\n" +
-            "      var enterEvent = new KeyboardEvent('keydown', {\n" +
-            "        key: 'Enter', code: 'Enter', keyCode: 13,\n" +
-            "        which: 13, bubbles: true\n" +
-            "      });\n" +
-            "      input.dispatchEvent(enterEvent);\n" +
-            "      Android.log('DeepSeek: 使用回车键发送消息');\n" +
-            "      return 'enter_sent';\n" +
+            "      try {\n" +
+            "        var ke = new KeyboardEvent('keydown', {\n" +
+            "          key: 'Enter', code: 'Enter', keyCode: 13,\n" +
+            "          which: 13, bubbles: true, cancelable: true\n" +
+            "        });\n" +
+            "        textarea.dispatchEvent(ke);\n" +
+            "        Android.log('DeepSeek: 回车键发送');\n" +
+            "        return 'enter_sent';\n" +
+            "      } catch(e2) {\n" +
+            "        Android.onDeepSeekError('未找到发送按钮，回车发送也失败');\n" +
+            "        return 'no_send_btn';\n" +
+            "      }\n" +
             "    }\n" +
             "\n" +
-            "    if (sendBtn) {\n" +
-            "      sendBtn.click();\n" +
-            "      Android.log('DeepSeek: 已点击发送按钮');\n" +
-            "      return 'clicked';\n" +
-            "    } else {\n" +
-            "      Android.onDeepSeekError('未找到发送按钮');\n" +
-            "      return 'no_send_btn';\n" +
-            "    }\n" +
+            "    sendBtn.click();\n" +
+            "    Android.log('DeepSeek: 已点击发送按钮');\n" +
+            "    return 'clicked';\n" +
             "  }, 300);\n" +
             "\n" +
             "  return 'preparing';\n" +
