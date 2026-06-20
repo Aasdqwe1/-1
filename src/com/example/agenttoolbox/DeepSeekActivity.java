@@ -515,115 +515,26 @@ public class DeepSeekActivity extends Activity {
         setStatus("正在提取页面源码...");
 
         try {
-            // 多策略提取 HTML：
-            // 策略1：获取主文档的完整 HTML
-            // 策略2：遍历所有 iframe，合并 iframe 内容
-            // 策略3：获取 body 内的所有文本内容作为兜底
-            // 策略4：获取 documentElement 的 innerHTML
-            String js = "(function() {" +
-                "  function esc(s) {" +
-                "    return String(s)" +
-                "      .replace(/\\\\/g, '\\\\\\\\')" +
-                "      .replace(/\"/g, '\\\\\"')" +
-                "      .replace(/\\n/g, '\\\\n')" +
-                "      .replace(/\\r/g, '\\\\r')" +
-                "      .replace(/\\t/g, '\\\\t');" +
-                "  }" +
-                "  " +
-                "  function getIframeContents(doc) {" +
-                "    var result = '';" +
-                "    try {" +
-                "      var iframes = doc.querySelectorAll ? doc.querySelectorAll('iframe') : [];" +
-                "      for (var i = 0; i < iframes.length; i++) {" +
-                "        try {" +
-                "          var iframeDoc = iframes[i].contentDocument || (iframes[i].contentWindow && iframes[i].contentWindow.document);" +
-                "          if (iframeDoc && iframeDoc.body && iframeDoc.body.innerHTML) {" +
-                "            result += '\\n<!-- iframe ' + i + ' -->\\n' + iframeDoc.body.innerHTML;" +
-                "          }" +
-                "        } catch(e) { /* cross-origin iframe, skip */ }" +
-                "      }" +
-                "    } catch(e) {}" +
-                "    return result;" +
-                "  }" +
-                "  " +
-                "  var strategies = [];" +
-                "  " +
-                "  // 策略1：主文档完整 HTML（包含 doctype）" +
-                "  try {" +
-                "    var html = document.documentElement ? document.documentElement.outerHTML : '';" +
-                "    var doctype = '';" +
-                "    if (document.doctype) {" +
-                "      doctype = '<!DOCTYPE ' + document.doctype.name;" +
-                "      if (document.doctype.publicId) doctype += ' PUBLIC \\\"' + document.doctype.publicId + '\\\"';" +
-                "      if (document.doctype.systemId) doctype += ' \\\"' + document.doctype.systemId + '\\\"';" +
-                "      doctype += '>';" +
-                "    }" +
-                "    strategies.push({name:'main_doc', content: doctype + html, len: (doctype + html).length});" +
-                "  } catch(e) { strategies.push({name:'main_doc', content:'', len:0, error: e.message}); }" +
-                "  " +
-                "  // 策略2：合并主文档 body + 所有 iframe 内容" +
-                "  try {" +
-                "    var bodyContent = document.body ? document.body.innerHTML : '';" +
-                "    var iframeContent = getIframeContents(document);" +
-                "    var combined = bodyContent + '\\n' + iframeContent;" +
-                "    strategies.push({name:'body_iframe', content: combined, len: combined.length});" +
-                "  } catch(e) { strategies.push({name:'body_iframe', content:'', len:0, error: e.message}); }" +
-                "  " +
-                "  // 策略3：documentElement innerHTML" +
-                "  try {" +
-                "    var inner = document.documentElement ? document.documentElement.innerHTML : '';" +
-                "    strategies.push({name:'inner_html', content: inner, len: inner.length});" +
-                "  } catch(e) { strategies.push({name:'inner_html', content:'', len:0, error: e.message}); }" +
-                "  " +
-                "  // 策略4：检查是否有对话内容（textarea/input 等输入区域）" +
-                "  try {" +
-                "    var chatEls = document.querySelectorAll('[contenteditable=\"true\"], textarea, [data-testid*=\"message\"], .message, .chat-message');" +
-                "    var chatContent = '';" +
-                "    for (var i = 0; i < chatEls.length; i++) {" +
-                "      chatContent += '\\n' + chatEls[i].outerHTML;" +
-                "    }" +
-                "    strategies.push({name:'chat_elements', content: chatContent, len: chatContent.length});" +
-                "  } catch(e) { strategies.push({name:'chat_elements', content:'', len:0, error: e.message}); }" +
-                "  " +
-                "  // 选择内容最丰富的策略" +
-                "  var best = strategies[0];" +
-                "  for (var i = 1; i < strategies.length; i++) {" +
-                "    if (strategies[i].len > best.len) best = strategies[i];" +
-                "  }" +
-                "  " +
-                "  if (best.len === 0) {" +
-                "    return JSON.stringify({success: false, error: '页面内容为空，所有提取策略均失败', strategies: strategies});" +
-                "  }" +
-                "  " +
-                "  return JSON.stringify({" +
-                "    success: true," +
-                "    strategy: best.name," +
-                "    length: best.len," +
-                "    html: best.content," +
-                "    allStrategies: strategies" +
-                "  });" +
+            // 第一步：先执行诊断探针，确认 WebView 执行上下文状态
+            String probeJs = "(function() {" +
+                "  var result = {" +
+                "    hasDocument: !!(document)," +
+                "    hasBody: !!(document && document.body)," +
+                "    bodyLength: document && document.body ? document.body.innerHTML.length : 0," +
+                "    docElementLength: document && document.documentElement ? document.documentElement.innerHTML.length : 0," +
+                "    iframeCount: document ? document.querySelectorAll ? document.querySelectorAll('iframe').length : 0 : 0," +
+                "    url: document ? document.URL || document.location.href : 'N/A'," +
+                "    readyState: document ? document.readyState : 'N/A'" +
+                "  };" +
+                "  return JSON.stringify(result);" +
                 "})()";
 
-            // 使用 evaluateJavascript 执行，直接在回调中获取返回值
-            webView.evaluateJavascript(js, new android.webkit.ValueCallback<String>() {
+            webView.evaluateJavascript(probeJs, new android.webkit.ValueCallback<String>() {
                 @Override
-                public void onReceiveValue(String value) {
-                    handleExtractResult(value);
+                public void onReceiveValue(String probeValue) {
+                    runExtractionWithProbe(probeValue);
                 }
             });
-
-            // 设置超时，如果 10 秒内没有回调，提示可能失败
-            handler.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    if (tvStatus.getText().toString().contains("正在提取")) {
-                        setStatus("提取超时，请检查页面是否加载完成");
-                        String errorMsg = "【提取超时】\n10秒内未收到结果\n可能原因：\n1. 页面内容加载较慢\n2. 页面安全限制\n3. 页面未加载完成\n\n建议：\n1. 等待页面完全加载后再提取\n2. 点击「刷新」后等待「加载完成」再重试";
-                        copyToClipboard(errorMsg);
-                        Toast.makeText(DeepSeekActivity.this, "提取超时，提示已复制", Toast.LENGTH_LONG).show();
-                    }
-                }
-            }, 10000);
 
         } catch (Exception e) {
             String fullTrace = "【extractPageHtml 调用异常 - 完整堆栈】\n" +
@@ -639,35 +550,121 @@ public class DeepSeekActivity extends Activity {
     }
 
     /**
-     * 处理提取源码的返回结果
-     * evaluateJavascript 返回的值是一个带引号的字符串（JSON格式的字符串），
-     * 需要先去掉外层引号，再解析其中的 JSON 对象
+     * 诊断探针返回后，执行真正的 HTML 提取
      */
-    private void handleExtractResult(String value) {
+    private void runExtractionWithProbe(String probeValue) {
+        final String probeInfo = probeValue;
+
+        String js = "(function() {" +
+            "  function getIframeContents(doc) {" +
+            "    var result = '';" +
+            "    try {" +
+            "      var iframes = doc.querySelectorAll ? doc.querySelectorAll('iframe') : [];" +
+            "      for (var i = 0; i < iframes.length; i++) {" +
+            "        try {" +
+            "          var iframeDoc = iframes[i].contentDocument || (iframes[i].contentWindow && iframes[i].contentWindow.document);" +
+            "          if (iframeDoc && iframeDoc.body && iframeDoc.body.innerHTML) {" +
+            "            result += '\\n<!-- iframe ' + i + ' -->\\n' + iframeDoc.body.innerHTML;" +
+            "          }" +
+            "        } catch(e) { result += '\\n<!-- iframe ' + i + ' error: ' + e.message + ' -->'; }" +
+            "      }" +
+            "    } catch(e) {}" +
+            "    return result;" +
+            "  }" +
+            "  var strategies = [];" +
+            "  try { var h = document.documentElement ? document.documentElement.outerHTML : ''; var d = ''; if (document.doctype) { d = '<!DOCTYPE ' + document.doctype.name; if (document.doctype.publicId) d += ' PUBLIC \\\"' + document.doctype.publicId + '\\\"'; if (document.doctype.systemId) d += ' \\\"' + document.doctype.systemId + '\\\"'; d += '>'; } strategies.push({name:'main_doc', content: d+h, len: (d+h).length}); } catch(e) { strategies.push({name:'main_doc', content:'', len:0, error: e.message}); }" +
+            "  try { strategies.push({name:'body_iframe', content: (document.body?document.body.innerHTML:'') + getIframeContents(document), len: ((document.body?document.body.innerHTML:'') + getIframeContents(document)).length}); } catch(e) { strategies.push({name:'body_iframe', content:'', len:0, error: e.message}); }" +
+            "  try { var inner = document.documentElement ? document.documentElement.innerHTML : ''; strategies.push({name:'inner_html', content: inner, len: inner.length}); } catch(e) { strategies.push({name:'inner_html', content:'', len:0, error: e.message}); }" +
+            "  try { var els = document.querySelectorAll ? document.querySelectorAll('[contenteditable=\"true\"], textarea, [data-testid*=\"message\"], .message, .chat-message') : []; var c = ''; for (var i=0;i<els.length;i++) c += '\\n' + els[i].outerHTML; strategies.push({name:'chat_elements', content: c, len: c.length}); } catch(e) { strategies.push({name:'chat_elements', content:'', len:0, error: e.message}); }" +
+            "  var best = strategies[0]; for (var i=1;i<strategies.length;i++) if (strategies[i].len > best.len) best = strategies[i];" +
+            "  if (best.len === 0) return JSON.stringify({success: false, error: '页面内容为空，所有策略均失败', strategies: strategies});" +
+            "  return JSON.stringify({success: true, strategy: best.name, length: best.len, html: best.content, allStrategies: strategies});" +
+            "})()";
+
+        webView.evaluateJavascript(js, new android.webkit.ValueCallback<String>() {
+            @Override
+            public void onReceiveValue(String value) {
+                handleExtractResult(value, probeInfo);
+            }
+        });
+
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (tvStatus.getText().toString().contains("正在提取")) {
+                    setStatus("提取超时");
+                    String timeoutInfo = "【提取超时 - 完整诊断】\n" +
+                        "时间: " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date()) + "\n\n" +
+                        "=== 诊断探针返回值 ===\n" + (probeValue != null ? probeValue : "null") + "\n\n" +
+                        "=== 提取 JavaScript 未返回 ===\n" +
+                        "12 秒内 evaluateJavascript 未回调，说明提取脚本未执行或被阻塞\n\n" +
+                        "可能原因：\n" +
+                        "1. 页面 DOM 结构异常庞大\n" +
+                        "2. JavaScript 执行被阻塞\n" +
+                        "3. 页面内容为空\n\n" +
+                        "建议：\n" +
+                        "1. 点击「刷新」重新加载\n" +
+                        "2. 等待「加载完成」后再试\n" +
+                        "3. 如果探针返回值显示页面正常，说明 JS 脚本执行超时";
+                    copyToClipboard(timeoutInfo);
+                    Toast.makeText(DeepSeekActivity.this, "超时，诊断信息已复制", Toast.LENGTH_LONG).show();
+                }
+            }
+        }, 12000);
+    }
+
+    /**
+     * 处理提取源码的返回结果（包含探针诊断信息）
+     */
+    private void handleExtractResult(String value, String probeValue) {
+        String probeInfo = probeValue;
+
         try {
-            // 区分不同情况：null 表示 WebView 执行上下文无效，"" 表示返回值本身为空
             if (value == null) {
                 setStatus("提取失败：WebView 执行上下文无效");
-                copyToClipboard("【提取失败】\nWebView 执行上下文无效\n\n可能原因：\n1. 页面正在加载中\n2. 页面加载出错\n3. WebView 被销毁\n\n建议：\n1. 点击「刷新」按钮\n2. 等待状态显示「加载完成」后再提取");
-                Toast.makeText(this, "提取失败，请刷新页面后重试", Toast.LENGTH_LONG).show();
+                String fullInfo = "【提取失败 - WebView 执行上下文无效】\n" +
+                    "时间: " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date()) + "\n\n" +
+                    "=== 诊断探针返回值 ===\n" + (probeInfo != null ? probeInfo : "null") + "\n\n" +
+                    "=== 问题分析 ===\n" +
+                    "evaluateJavascript 返回 null，说明 JavaScript 执行上下文无效\n\n" +
+                    "探针含义：\n" +
+                    "- hasDocument: 是否有 document 对象\n" +
+                    "- hasBody: body 是否存在\n" +
+                    "- bodyLength: body 内容长度\n" +
+                    "- readyState: 页面加载状态\n\n" +
+                    "可能原因：\n" +
+                    "1. 页面正在加载中\n" +
+                    "2. 页面加载出错（404/500 等）\n" +
+                    "3. WebView 被销毁\n" +
+                    "4. 跨域 CSP 限制\n\n" +
+                    "建议：\n" +
+                    "1. 点击「刷新」按钮重新加载\n" +
+                    "2. 等待状态显示「加载完成」后再提取";
+                copyToClipboard(fullInfo);
+                Toast.makeText(this, "提取失败，完整诊断已复制", Toast.LENGTH_LONG).show();
                 return;
             }
 
             if (value.isEmpty() || value.equals("null") || value.trim().isEmpty()) {
                 setStatus("提取失败：返回值为空");
-                copyToClipboard("【提取失败】\n返回值为空\n\n可能原因：\n1. 页面尚未完全加载\n2. 页面内容为空\n\n建议：\n1. 点击「刷新」按钮\n2. 等待状态显示「加载完成」后再提取\n3. 如持续失败，请检查网络连接");
-                Toast.makeText(this, "提取失败，请刷新页面后重试", Toast.LENGTH_LONG).show();
+                String fullInfo = "【提取失败 - 返回值为空】\n" +
+                    "时间: " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date()) + "\n\n" +
+                    "=== 诊断探针返回值 ===\n" + (probeInfo != null ? probeInfo : "null") + "\n\n" +
+                    "=== 问题分析 ===\n" +
+                    "JavaScript 返回了空值，说明页面内容确实为空\n\n" +
+                    "建议：\n" +
+                    "1. 点击「刷新」重新加载页面\n" +
+                    "2. 确认 DeepSeek 页面正常加载显示\n" +
+                    "3. 等待状态变为「加载完成」后再提取";
+                copyToClipboard(fullInfo);
+                Toast.makeText(this, "提取失败，完整诊断已复制", Toast.LENGTH_LONG).show();
                 return;
             }
 
-            // evaluateJavascript 返回的是 JavaScript 值的字符串表示，
-            // 对于字符串会带双引号，因此需要先解析为字符串
             String jsonStr;
             try {
-                // 尝试按 JSON 字符串解析（会去掉外层双引号，并还原转义字符）
                 jsonStr = new org.json.JSONArray("[" + value + "]").getString(0);
             } catch (Exception parseEx) {
-                // 如果解析失败，直接尝试去掉外层引号
                 jsonStr = value;
                 if (jsonStr.startsWith("\"") && jsonStr.endsWith("\"")) {
                     jsonStr = jsonStr.substring(1, jsonStr.length() - 1)
@@ -678,7 +675,6 @@ public class DeepSeekActivity extends Activity {
                 }
             }
 
-            // 解析返回的 JSON 对象
             org.json.JSONObject resultObj = new org.json.JSONObject(jsonStr);
             boolean success = resultObj.optBoolean("success", false);
 
@@ -693,39 +689,62 @@ public class DeepSeekActivity extends Activity {
                     Toast.makeText(this, "页面源码已复制到剪贴板", Toast.LENGTH_SHORT).show();
                 } else {
                     setStatus("提取失败：HTML 为空");
-                    copyToClipboard("【提取失败】\n页面 HTML 内容为空（策略:" + strategy + "）\n\n建议：\n1. 刷新页面\n2. 确认 DeepSeek 页面正常显示");
-                    Toast.makeText(this, "提取失败：页面内容为空", Toast.LENGTH_SHORT).show();
+                    String fullInfo = "【提取失败 - HTML 为空】\n" +
+                        "时间: " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date()) + "\n" +
+                        "策略: " + strategy + "\n\n" +
+                        "=== 诊断探针 ===\n" + (probeInfo != null ? probeInfo : "null") + "\n\n" +
+                        "=== 各策略提取结果 ===\n" +
+                        getStrategiesDebugInfo(resultObj) + "\n建议：刷新页面后重新提取";
+                    copyToClipboard(fullInfo);
+                    Toast.makeText(this, "提取失败，详情已复制", Toast.LENGTH_SHORT).show();
                 }
             } else {
                 String errorMsg = resultObj.optString("error", "未知错误");
-                // 如果所有策略都失败，显示详细策略信息
-                String debugInfo = "";
-                try {
-                    org.json.JSONArray strategies = resultObj.getJSONArray("allStrategies");
-                    debugInfo = "\n\n各策略提取结果：\n";
-                    for (int i = 0; i < strategies.length(); i++) {
-                        org.json.JSONObject s = strategies.getJSONObject(i);
-                        String sname = s.optString("name", "?");
-                        int slen = s.optInt("len", 0);
-                        String serr = s.optString("error", "");
-                        debugInfo += "- " + sname + ": " + slen + " 字符";
-                        if (!serr.isEmpty()) debugInfo += " [错误: " + serr + "]";
-                        debugInfo += "\n";
-                    }
-                } catch (Exception ignored) { }
-
-                String fullError = "【提取失败】\n" + errorMsg + debugInfo + "\n\n建议：\n1. 点击「刷新」重新加载页面\n2. 等待状态显示「加载完成」后再提取";
-                copyToClipboard(fullError);
+                String fullInfo = "【提取失败 - JavaScript 执行出错】\n" +
+                    "时间: " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date()) + "\n" +
+                    "错误信息: " + errorMsg + "\n\n" +
+                    "=== 诊断探针 ===\n" + (probeInfo != null ? probeInfo : "null") + "\n\n" +
+                    "=== 各策略提取结果 ===\n" +
+                    getStrategiesDebugInfo(resultObj);
+                copyToClipboard(fullInfo);
                 setStatus("提取失败：" + errorMsg);
-                Toast.makeText(this, "提取失败，详情已复制", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "提取失败，完整诊断已复制", Toast.LENGTH_LONG).show();
             }
 
         } catch (Exception e) {
-            String fullTrace = buildFullStackTrace(e, value);
+            String fullTrace = "【handleExtractResult 异常 - 完整堆栈】\n" +
+                "时间: " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date()) + "\n" +
+                "异常类型: " + e.getClass().getName() + "\n" +
+                "异常信息: " + e.getMessage() + "\n\n" +
+                "=== 诊断探针 ===\n" + (probeInfo != null ? probeInfo : "null") + "\n\n" +
+                "=== 原始返回值 ===\n" + (value != null ? value : "null") + "\n\n" +
+                "=== 完整堆栈 ===\n" + getStackTraceString(e);
             copyToClipboard(fullTrace);
             setStatus("处理异常，详情已复制");
-            Toast.makeText(this, "处理异常，完整堆栈已复制到剪贴板", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "处理异常，完整堆栈已复制", Toast.LENGTH_LONG).show();
         }
+    }
+
+    /**
+     * 从 JSON 对象中提取各策略的调试信息
+     */
+    private String getStrategiesDebugInfo(org.json.JSONObject resultObj) {
+        StringBuilder sb = new StringBuilder();
+        try {
+            org.json.JSONArray strategies = resultObj.getJSONArray("allStrategies");
+            for (int i = 0; i < strategies.length(); i++) {
+                org.json.JSONObject s = strategies.getJSONObject(i);
+                String sname = s.optString("name", "?");
+                int slen = s.optInt("len", 0);
+                String serr = s.optString("error", "");
+                sb.append(sname).append(": ").append(slen).append(" 字符");
+                if (!serr.isEmpty()) sb.append(" [错误: ").append(serr).append("]");
+                sb.append("\n");
+            }
+        } catch (Exception e) {
+            sb.append("(无法解析策略信息)\n");
+        }
+        return sb.toString();
     }
 
     /**
