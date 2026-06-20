@@ -313,7 +313,7 @@ public class McpServer {
          * 处理 DeepSeek 聊天请求
          * 注意: throws JSONException 已添加，内部 try-catch 会捕获所有异常
          */
-        private void handleChatRequest(String path, String requestBody, OutputStream out) 
+        private void handleChatRequest(String path, String requestBody, final OutputStream out) 
 		throws IOException {
             String responseBody;
             try {
