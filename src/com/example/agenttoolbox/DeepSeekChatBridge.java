@@ -471,10 +471,10 @@ public class DeepSeekChatBridge {
             // 当 JS 返回 JSON.stringify(...) 时，Java 端拿到的是带外层双引号的字符串
             // 例如 "\"{\\\"sessions\\\":[...]}\""
             if (raw.length() >= 2 && raw.startsWith("\"") && raw.endsWith("\"")) {
-                // 使用 JSONObject 来解包，避免手动处理转义出错
-                java.util.ArrayList<String> list = new java.util.ArrayList<String>();
-                list.add(raw);
-                org.json.JSONArray arr = new org.json.JSONArray(list);
+                // 把 raw 当作 JSON 字符串来解析，构造一个 JSON 数组来解包
+                // 这样才能真正去掉外层双引号并反转义内部字符
+                String jsonArrayStr = "[" + raw + "]";
+                org.json.JSONArray arr = new org.json.JSONArray(jsonArrayStr);
                 return arr.getString(0);
             }
         } catch (Exception e) {
