@@ -515,23 +515,93 @@ public class DeepSeekActivity extends Activity {
         setStatus("正在提取页面源码...");
 
         try {
-            // 构造提取页面源码的 JavaScript 代码
+            // 多策略提取 HTML：
+            // 策略1：获取主文档的完整 HTML
+            // 策略2：遍历所有 iframe，合并 iframe 内容
+            // 策略3：获取 body 内的所有文本内容作为兜底
+            // 策略4：获取 documentElement 的 innerHTML
             String js = "(function() {" +
+                "  function esc(s) {" +
+                "    return String(s)" +
+                "      .replace(/\\\\/g, '\\\\\\\\')" +
+                "      .replace(/\"/g, '\\\\\"')" +
+                "      .replace(/\\n/g, '\\\\n')" +
+                "      .replace(/\\r/g, '\\\\r')" +
+                "      .replace(/\\t/g, '\\\\t');" +
+                "  }" +
+                "  " +
+                "  function getIframeContents(doc) {" +
+                "    var result = '';" +
+                "    try {" +
+                "      var iframes = doc.querySelectorAll ? doc.querySelectorAll('iframe') : [];" +
+                "      for (var i = 0; i < iframes.length; i++) {" +
+                "        try {" +
+                "          var iframeDoc = iframes[i].contentDocument || (iframes[i].contentWindow && iframes[i].contentWindow.document);" +
+                "          if (iframeDoc && iframeDoc.body && iframeDoc.body.innerHTML) {" +
+                "            result += '\\n<!-- iframe ' + i + ' -->\\n' + iframeDoc.body.innerHTML;" +
+                "          }" +
+                "        } catch(e) { /* cross-origin iframe, skip */ }" +
+                "      }" +
+                "    } catch(e) {}" +
+                "    return result;" +
+                "  }" +
+                "  " +
+                "  var strategies = [];" +
+                "  " +
+                "  // 策略1：主文档完整 HTML（包含 doctype）" +
                 "  try {" +
-                "    var html = document.documentElement.outerHTML;" +
+                "    var html = document.documentElement ? document.documentElement.outerHTML : '';" +
                 "    var doctype = '';" +
                 "    if (document.doctype) {" +
                 "      doctype = '<!DOCTYPE ' + document.doctype.name;" +
-                "      if (document.doctype.publicId) doctype += ' PUBLIC \"' + document.doctype.publicId + '\"';" +
-                "      if (document.doctype.systemId) doctype += ' \"' + document.doctype.systemId + '\"';" +
+                "      if (document.doctype.publicId) doctype += ' PUBLIC \\\"' + document.doctype.publicId + '\\\"';" +
+                "      if (document.doctype.systemId) doctype += ' \\\"' + document.doctype.systemId + '\\\"';" +
                 "      doctype += '>';" +
                 "    }" +
-                "    var fullHtml = doctype + html;" +
-                "    // 避免 JSON.stringify 遇到特殊字符失败，先 encode 再返回" +
-                "    return JSON.stringify({success: true, length: fullHtml.length, html: fullHtml});" +
-                "  } catch(e) {" +
-                "    return JSON.stringify({success: false, error: e.message + '\\n' + e.stack});" +
+                "    strategies.push({name:'main_doc', content: doctype + html, len: (doctype + html).length});" +
+                "  } catch(e) { strategies.push({name:'main_doc', content:'', len:0, error: e.message}); }" +
+                "  " +
+                "  // 策略2：合并主文档 body + 所有 iframe 内容" +
+                "  try {" +
+                "    var bodyContent = document.body ? document.body.innerHTML : '';" +
+                "    var iframeContent = getIframeContents(document);" +
+                "    var combined = bodyContent + '\\n' + iframeContent;" +
+                "    strategies.push({name:'body_iframe', content: combined, len: combined.length});" +
+                "  } catch(e) { strategies.push({name:'body_iframe', content:'', len:0, error: e.message}); }" +
+                "  " +
+                "  // 策略3：documentElement innerHTML" +
+                "  try {" +
+                "    var inner = document.documentElement ? document.documentElement.innerHTML : '';" +
+                "    strategies.push({name:'inner_html', content: inner, len: inner.length});" +
+                "  } catch(e) { strategies.push({name:'inner_html', content:'', len:0, error: e.message}); }" +
+                "  " +
+                "  // 策略4：检查是否有对话内容（textarea/input 等输入区域）" +
+                "  try {" +
+                "    var chatEls = document.querySelectorAll('[contenteditable=\"true\"], textarea, [data-testid*=\"message\"], .message, .chat-message');" +
+                "    var chatContent = '';" +
+                "    for (var i = 0; i < chatEls.length; i++) {" +
+                "      chatContent += '\\n' + chatEls[i].outerHTML;" +
+                "    }" +
+                "    strategies.push({name:'chat_elements', content: chatContent, len: chatContent.length});" +
+                "  } catch(e) { strategies.push({name:'chat_elements', content:'', len:0, error: e.message}); }" +
+                "  " +
+                "  // 选择内容最丰富的策略" +
+                "  var best = strategies[0];" +
+                "  for (var i = 1; i < strategies.length; i++) {" +
+                "    if (strategies[i].len > best.len) best = strategies[i];" +
                 "  }" +
+                "  " +
+                "  if (best.len === 0) {" +
+                "    return JSON.stringify({success: false, error: '页面内容为空，所有提取策略均失败', strategies: strategies});" +
+                "  }" +
+                "  " +
+                "  return JSON.stringify({" +
+                "    success: true," +
+                "    strategy: best.name," +
+                "    length: best.len," +
+                "    html: best.content," +
+                "    allStrategies: strategies" +
+                "  });" +
                 "})()";
 
             // 使用 evaluateJavascript 执行，直接在回调中获取返回值
@@ -542,18 +612,18 @@ public class DeepSeekActivity extends Activity {
                 }
             });
 
-            // 设置超时，如果 8 秒内没有回调，提示可能失败
+            // 设置超时，如果 10 秒内没有回调，提示可能失败
             handler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
                     if (tvStatus.getText().toString().contains("正在提取")) {
                         setStatus("提取超时，请检查页面是否加载完成");
-                        String errorMsg = "【提取超时】\n5秒内未收到结果\n可能原因：\n1. JavaScript 执行出错\n2. 页面安全限制阻止了 alert\n3. 页面未加载完成\n\n建议：\n1. 刷新页面后再试\n2. 等页面完全加载后再试";
+                        String errorMsg = "【提取超时】\n10秒内未收到结果\n可能原因：\n1. 页面内容加载较慢\n2. 页面安全限制\n3. 页面未加载完成\n\n建议：\n1. 等待页面完全加载后再提取\n2. 点击「刷新」后等待「加载完成」再重试";
                         copyToClipboard(errorMsg);
-                        Toast.makeText(DeepSeekActivity.this, "提取失败，错误信息已复制", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(DeepSeekActivity.this, "提取超时，提示已复制", Toast.LENGTH_LONG).show();
                     }
                 }
-            }, 8000);
+            }, 10000);
 
         } catch (Exception e) {
             String errorMsg = "【调用异常】\n" + e.getClass().getName() + ": " + e.getMessage() + "\n\n" + getStackTraceString(e);
@@ -610,21 +680,39 @@ public class DeepSeekActivity extends Activity {
             if (success) {
                 String html = resultObj.optString("html", "");
                 int length = resultObj.optInt("length", 0);
+                String strategy = resultObj.optString("strategy", "unknown");
+
                 if (html != null && !html.isEmpty()) {
                     copyToClipboard(html);
-                    setStatus("页面源码已复制（" + length + " 字符）");
+                    setStatus("已复制（" + length + " 字符，策略:" + strategy + "）");
                     Toast.makeText(this, "页面源码已复制到剪贴板", Toast.LENGTH_SHORT).show();
                 } else {
                     setStatus("提取失败：HTML 为空");
-                    copyToClipboard("【提取失败】\n页面 HTML 内容为空");
+                    copyToClipboard("【提取失败】\n页面 HTML 内容为空（策略:" + strategy + "）\n\n建议：\n1. 刷新页面\n2. 确认 DeepSeek 页面正常显示");
                     Toast.makeText(this, "提取失败：页面内容为空", Toast.LENGTH_SHORT).show();
                 }
             } else {
                 String errorMsg = resultObj.optString("error", "未知错误");
-                String fullError = "【JavaScript 执行错误】\n" + errorMsg;
+                // 如果所有策略都失败，显示详细策略信息
+                String debugInfo = "";
+                try {
+                    org.json.JSONArray strategies = resultObj.getJSONArray("allStrategies");
+                    debugInfo = "\n\n各策略提取结果：\n";
+                    for (int i = 0; i < strategies.length(); i++) {
+                        org.json.JSONObject s = strategies.getJSONObject(i);
+                        String sname = s.optString("name", "?");
+                        int slen = s.optInt("len", 0);
+                        String serr = s.optString("error", "");
+                        debugInfo += "- " + sname + ": " + slen + " 字符";
+                        if (!serr.isEmpty()) debugInfo += " [错误: " + serr + "]";
+                        debugInfo += "\n";
+                    }
+                } catch (Exception ignored) { }
+
+                String fullError = "【提取失败】\n" + errorMsg + debugInfo + "\n\n建议：\n1. 点击「刷新」重新加载页面\n2. 等待状态显示「加载完成」后再提取";
                 copyToClipboard(fullError);
-                setStatus("提取失败：JS 出错");
-                Toast.makeText(this, "提取失败，错误信息已复制", Toast.LENGTH_SHORT).show();
+                setStatus("提取失败：" + errorMsg);
+                Toast.makeText(this, "提取失败，详情已复制", Toast.LENGTH_LONG).show();
             }
 
         } catch (Exception e) {
