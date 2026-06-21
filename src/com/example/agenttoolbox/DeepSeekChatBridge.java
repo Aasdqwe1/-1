@@ -293,11 +293,14 @@ public class DeepSeekChatBridge {
             "    // 保留段落之间的空行\n" +
             "    md = md.replace(/<\\/p>/gi, '\\n\\n');\n" +
             "    md = md.replace(/<p[^>]*>/gi, '');\n" +
-            "    // 转换div为段落\n" +
+            "    // 转换div标签（开和关）\n" +
+            "    md = md.replace(/<div[^>]*>/gi, '');\n" +
             "    md = md.replace(/<\\/div>/gi, '\\n');\n" +
             "    // 转换br为换行符\n" +
             "    md = md.replace(/<br\\s*\\/?>/gi, '\\n');\n" +
-            "    // 保持换行符用于列表等结构（使用[\\s\\S]处理跨行内容）\n" +
+            "    // 移除ol/ul标签，保留li\n" +
+            "    md = md.replace(/<\\/?o?ul[^>]*>/gi, '');\n" +
+            "    // 处理列表项（使用[\\s\\S]处理跨行内容）\n" +
             "    md = md.replace(/<li[^>]*>([\\s\\S]*?)<\\/li>/gi, '- $1\\n');\n" +
             "    // 转换加粗\n" +
             "    md = md.replace(/<strong[^>]*>([\\s\\S]*?)<\\/strong>/gi, '**$1**');\n" +
@@ -319,7 +322,7 @@ public class DeepSeekChatBridge {
             "    // 移除其他HTML标签\n" +
             "    md = md.replace(/<[^>]+>/gi, '');\n" +
             "    // HTML实体解码\n" +
-            "    md = md.replace(/&quot;/g, '\\\"');\n" +
+            "    md = md.replace(/&quot;/g, '\"');\n" +
             "    md = md.replace(/&#39;/g, \"'\");\n" +
             "    md = md.replace(/&lt;/g, '<');\n" +
             "    md = md.replace(/&gt;/g, '>');\n" +
