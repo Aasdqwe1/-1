@@ -828,12 +828,14 @@ public class DeepSeekChatBridge {
             return message;
         }
         
-        // 计算省略号长度
-        String ellipsis = "...[省略 " + (message.length() - maxLen + 20) + " 字符]...";
+        // 计算实际省略的字符数
+        int omittedChars = message.length() - maxLen + 20; // 预留空间给省略号
+        String ellipsis = "...[省略 " + omittedChars + " 字符]...";
         int ellipsisLen = ellipsis.length();
+        
         if (ellipsisLen >= maxLen) {
             // 如果省略号本身太长，直接返回首部
-            return message.substring(0, maxLen);
+            return message.substring(0, Math.max(1, maxLen - 3)) + "...";
         }
         
         // 分配剩余空间给前半部分和后半部分（2:1 比例，前部分更多）
@@ -841,9 +843,14 @@ public class DeepSeekChatBridge {
         int frontLen = (availableLen * 2) / 3;
         int backLen = availableLen - frontLen;
         
-        String front = message.substring(0, frontLen);
-        String back = message.substring(message.length() - backLen);
-        return front + ellipsis + back;
+        if (frontLen > 0 && backLen > 0) {
+            String front = message.substring(0, Math.min(frontLen, message.length()));
+            String back = message.substring(Math.max(0, message.length() - backLen));
+            return front + ellipsis + back;
+        }
+        
+        // 如果无法分配空间，返回首部
+        return message.substring(0, Math.max(1, maxLen - 3)) + "...";
     }
 
     /**

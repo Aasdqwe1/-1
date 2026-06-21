@@ -259,9 +259,8 @@ public class McpServer {
             if (requestBody == null) {
                 return "";
             }
-            // 移除所有 NUL 字节和其他控制字符（除了制表符、换行符、回车符）
-            return requestBody.replaceAll("\0", "")
-                    .replaceAll("[\u0001-\u0008\u000B-\u000C\u000E-\u001F\u007F-\u009F]", "");
+            // 在单次正则表达式中移除所有 NUL 字节和控制字符（除了制表符、换行符、回车符）
+            return requestBody.replaceAll("[\\x00\\x01-\\x08\\x0B-\\x0C\\x0E-\\x1F\\x7F-\\x9F]", "");
         }
 
         /**

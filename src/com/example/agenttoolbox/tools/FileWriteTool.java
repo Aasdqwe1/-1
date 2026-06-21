@@ -21,8 +21,11 @@ public class FileWriteTool implements Tool {
             "/storage/emulated/0/Pictures/",
             "/storage/emulated/0/DCIM/",
             "/storage/emulated/0/Movies/",
-            "/storage/emulated/0/",
-            "/sdcard/",
+            "/sdcard/Download/",
+            "/sdcard/Documents/",
+            "/sdcard/Pictures/",
+            "/sdcard/DCIM/",
+            "/sdcard/Movies/",
             "/Download/",
             "/Documents/",
             "/Pictures/",
@@ -138,12 +141,12 @@ public class FileWriteTool implements Tool {
      */
     private boolean isExternalStoragePath(String path) {
         return path.startsWith("/storage/emulated/0/") 
+                || path.startsWith("/sdcard/")
                 || path.startsWith("/Download/")
                 || path.startsWith("/Documents/")
                 || path.startsWith("/Pictures/")
                 || path.startsWith("/DCIM/")
-                || path.startsWith("/Movies/")
-                || path.startsWith("/sdcard");
+                || path.startsWith("/Movies/");
     }
     
     /**
