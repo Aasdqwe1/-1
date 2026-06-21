@@ -342,7 +342,7 @@ public class McpServer {
          * - 心跳消息混入 JSON 流，导致 JSON 不完整
          * 
          * 改进方案：
-         * 1. 如果 chunk 包含 "jsonrpc": 或 "jsonrpc\": 的模式，立即认为是工具调用 JSON
+         * 1. 如果 chunk 包含 "jsonrpc": 的 JSON 字段标记，立即认为是工具调用 JSON
          * 2. 检查 chunk 是否以 { 开头并包含 "method" 字段
          * 3. 检查是否包含 "tools/call" 标记
          * 这样可以在 JSON 流的早期阶段就禁用心跳，避免被心跳中断
@@ -350,9 +350,9 @@ public class McpServer {
         private boolean isToolCallJson(String text) {
             if (text == null || text.length() == 0) return false;
             
-            // 检查 JSON-RPC 标记：查找 "jsonrpc": 或 "jsonrpc\" 的模式
+            // 检查 JSON-RPC 标记：查找 "jsonrpc": 的模式（JSON 字段标记）
             // 这避免误匹配普通文本中的 "jsonrpc" 单词
-            if (text.indexOf("\"jsonrpc\":") != -1 || text.indexOf("\"jsonrpc\"\\") != -1) {
+            if (text.indexOf("\"jsonrpc\":") != -1) {
                 return true;
             }
             
