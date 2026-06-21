@@ -33,7 +33,7 @@ public class CmdTool implements Tool {
 
             JSONObject command = new JSONObject();
             command.put("type", "string");
-            command.put("description", "要执行的 CMD 命令，如 \"ls\"、\"pm list packages\"、\"dumpsys battery\"");
+            command.put("description", "要执行的 CMD 命令，如 ls、pm list packages、dumpsys battery");
             properties.put("command", command);
 
             JSONObject timeout = new JSONObject();
@@ -69,8 +69,8 @@ public class CmdTool implements Tool {
             throw new Exception("禁止执行危险命令");
         }
 
-        StringBuilder output = new StringBuilder();
-        StringBuilder errorOutput = new StringBuilder();
+        final StringBuilder output = new StringBuilder();
+        final StringBuilder errorOutput = new StringBuilder();
 
         try {
             // Android 使用 /system/bin/cmd，Windows 使用 cmd.exe
@@ -80,26 +80,42 @@ public class CmdTool implements Tool {
             Process process = Runtime.getRuntime().exec(cmdPrefix + " " + command);
 
             // 读取输出
-            Thread stdoutThread = new Thread(() -> {
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        output.append(line).append("\n");
+            Thread stdoutThread = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                        try {
+                            String line;
+                            while ((line = reader.readLine()) != null) {
+                                output.append(line).append("\n");
+                            }
+                        } finally {
+                            reader.close();
+                        }
+                    } catch (Exception e) {
+                        errorOutput.append("读取输出失败: ").append(e.getMessage()).append("\n");
                     }
-                } catch (Exception e) {
-                    errorOutput.append("读取输出失败: ").append(e.getMessage()).append("\n");
                 }
             });
 
             // 读取错误输出
-            Thread stderrThread = new Thread(() -> {
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        errorOutput.append(line).append("\n");
+            Thread stderrThread = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()));
+                        try {
+                            String line;
+                            while ((line = reader.readLine()) != null) {
+                                errorOutput.append(line).append("\n");
+                            }
+                        } finally {
+                            reader.close();
+                        }
+                    } catch (Exception e) {
+                        // ignore
                     }
-                } catch (Exception e) {
-                    // ignore
                 }
             });
 

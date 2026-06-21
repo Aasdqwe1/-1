@@ -8,7 +8,6 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStreamReader;
-import java.io.InputStream;
 
 /**
  * SH Shell 脚本执行工具
@@ -70,8 +69,8 @@ public class ShTool implements Tool {
             throw new Exception("脚本不能为空");
         }
 
-        StringBuilder output = new StringBuilder();
-        StringBuilder errorOutput = new StringBuilder();
+        final StringBuilder output = new StringBuilder();
+        final StringBuilder errorOutput = new StringBuilder();
 
         try {
             File scriptFile;
@@ -89,8 +88,11 @@ public class ShTool implements Tool {
 
                 // 写入脚本内容
                 java.io.FileOutputStream fos = new java.io.FileOutputStream(scriptFile);
-                fos.write(script.getBytes("UTF-8"));
-                fos.close();
+                try {
+                    fos.write(script.getBytes("UTF-8"));
+                } finally {
+                    fos.close();
+                }
                 scriptFile.setExecutable(true, false);
             } else {
                 // 文件路径模式
@@ -129,26 +131,42 @@ public class ShTool implements Tool {
             Process process = Runtime.getRuntime().exec("sh -c \"" + cmd.replace("\"", "\\\"") + "\"");
 
             // 读取输出
-            Thread stdoutThread = new Thread(() -> {
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        output.append(line).append("\n");
+            Thread stdoutThread = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                        try {
+                            String line;
+                            while ((line = reader.readLine()) != null) {
+                                output.append(line).append("\n");
+                            }
+                        } finally {
+                            reader.close();
+                        }
+                    } catch (Exception e) {
+                        errorOutput.append("读取输出失败: ").append(e.getMessage()).append("\n");
                     }
-                } catch (Exception e) {
-                    errorOutput.append("读取输出失败: ").append(e.getMessage()).append("\n");
                 }
             });
 
             // 读取错误输出
-            Thread stderrThread = new Thread(() -> {
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        errorOutput.append(line).append("\n");
+            Thread stderrThread = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()));
+                        try {
+                            String line;
+                            while ((line = reader.readLine()) != null) {
+                                errorOutput.append(line).append("\n");
+                            }
+                        } finally {
+                            reader.close();
+                        }
+                    } catch ( Exception e) {
+                        // ignore
                     }
-                } catch (Exception e) {
-                    // ignore
                 }
             });
 

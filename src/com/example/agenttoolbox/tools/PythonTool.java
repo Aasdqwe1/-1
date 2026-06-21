@@ -67,8 +67,8 @@ public class PythonTool implements Tool {
             throw new Exception("脚本不能为空");
         }
 
-        StringBuilder output = new StringBuilder();
-        StringBuilder errorOutput = new StringBuilder();
+        final StringBuilder output = new StringBuilder();
+        final StringBuilder errorOutput = new StringBuilder();
 
         try {
             // 查找 Python 解释器
@@ -91,26 +91,42 @@ public class PythonTool implements Tool {
             Process process = pb.start();
 
             // 读取输出
-            Thread stdoutThread = new Thread(() -> {
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        output.append(line).append("\n");
+            Thread stdoutThread = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                        try {
+                            String line;
+                            while ((line = reader.readLine()) != null) {
+                                output.append(line).append("\n");
+                            }
+                        } finally {
+                            reader.close();
+                        }
+                    } catch (Exception e) {
+                        errorOutput.append("读取输出失败: ").append(e.getMessage()).append("\n");
                     }
-                } catch (Exception e) {
-                    errorOutput.append("读取输出失败: ").append(e.getMessage()).append("\n");
                 }
             });
 
             // 读取错误输出
-            Thread stderrThread = new Thread(() -> {
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        errorOutput.append(line).append("\n");
+            Thread stderrThread = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()));
+                        try {
+                            String line;
+                            while ((line = reader.readLine()) != null) {
+                                errorOutput.append(line).append("\n");
+                            }
+                        } finally {
+                            reader.close();
+                        }
+                    } catch (Exception e) {
+                        // ignore
                     }
-                } catch (Exception e) {
-                    // ignore
                 }
             });
 
@@ -168,14 +184,18 @@ public class PythonTool implements Tool {
             "/system/bin/python"
         };
 
-        for (String cmd : candidates) {
+        for (final String cmd : candidates) {
             try {
                 Process test = Runtime.getRuntime().exec("sh -c \"which " + cmd + "\"");
                 BufferedReader br = new BufferedReader(new InputStreamReader(test.getInputStream()));
-                String path = br.readLine();
-                test.waitFor(500, java.util.concurrent.TimeUnit.MILLISECONDS);
-                if (path != null && !path.isEmpty()) {
-                    return cmd;
+                try {
+                    String path = br.readLine();
+                    test.waitFor(500, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    if (path != null && !path.isEmpty()) {
+                        return cmd;
+                    }
+                } finally {
+                    br.close();
                 }
             } catch (Exception e) {
                 // continue
