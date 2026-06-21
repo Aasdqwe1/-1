@@ -331,6 +331,7 @@ public class DeepSeekChatBridge {
             "    md = md.replace(/&lt;/g, '<');\n" +
             "    md = md.replace(/&gt;/g, '>');\n" +
             "    md = md.replace(/&amp;/g, '&');\n" +
+            "    // 返回非空内容或null，允许fallback机制使用innerText\n" +
             "    return md.length > 0 ? md : null;\n" +
             "  }\n" +
             "\n" +
