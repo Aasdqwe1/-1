@@ -22,6 +22,8 @@ public class ToolManager {
         registerTool(new FileReadTool());
         registerTool(new FileWriteTool());
         registerTool(new FileListTool());
+        registerTool(new ShellTool());
+        registerTool(new CmdTool());
     }
     
     public static synchronized ToolManager getInstance() {
