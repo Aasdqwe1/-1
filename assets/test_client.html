@@ -80,13 +80,15 @@
        function renderMarkdown(text) {
            if (!text) return '';
            try {
+               // 先解码 HTML 实体（防止标签被转义成实体后显示为纯文本）
+               var decoded = unescapeHtml(text);
                if (typeof marked !== 'undefined') {
                    // 优先使用 parseInline（同步、非 Promise）
                    if (typeof marked.parseInline === 'function') {
-                       var inline = marked.parseInline(text);
+                       var inline = marked.parseInline(decoded);
                        if (typeof inline === 'string' && inline.length > 0) return sanitizeHtml(inline);
                    }
-                   var parsed = marked.parse(text);
+                   var parsed = marked.parse(decoded);
                    if (typeof parsed === 'string') return sanitizeHtml(parsed);
                }
            } catch (e) { }
@@ -1078,6 +1080,13 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        function unescapeHtml(html) {
+            if (!html) return '';
+            const txt = document.createElement('textarea');
+            txt.innerHTML = html;
+            return txt.value;
         }
 
         function syntaxHighlight(json) {
