@@ -399,8 +399,8 @@ public class DeepSeekChatBridge {
             "    }\n" +
             "\n" +
             "    var complete = isLatestReplyComplete(latestEl);\n" +
-            "    // 完成条件：有操作栏 或 (不在生成 且 长度稳定多次)\n" +
-            "    if ((!gen && complete) || sameLenStable >= 8) {\n" +
+            "    // 完成条件：内容长度连续稳定多次（5秒），避免操作栏误判\n" +
+            "    if (sameLenStable >= 10) {\n" +
             "      finish(reply);\n" +
             "      return;\n" +
             "    }\n" +
