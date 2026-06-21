@@ -18,6 +18,11 @@ public class FileWriteTool implements Tool {
     private static final String[] ALLOWED_DIRS = {
             "Download", "Documents", "Pictures", "DCIM", "Movies"
     };
+    
+    // 允许的外部存储目录简写（用于路径转换）
+    private static final String[] ALLOWED_SHORTHAND_DIRS = {
+            "/Download/", "/Documents/", "/Pictures/", "/DCIM/", "/Movies/"
+    };
 
     // 允许写入的外部存储路径白名单（完整路径）
     private static final String[] ALLOWED_EXTERNAL_PREFIXES = {
@@ -102,7 +107,9 @@ public class FileWriteTool implements Tool {
             file = new File(path);
         } else if (isShorthandExternalPath(path)) {
             // 外部存储简写路径（如 /Download/xxx、/Documents/xxx）
-            String fullPath = new File(getExternalStorageDir(), path.substring(1)).getAbsolutePath();
+            // 移除前导斜杠后获取完整路径
+            String relativePath = path.length() > 1 ? path.substring(1) : "";
+            String fullPath = new File(getExternalStorageDir(), relativePath).getAbsolutePath();
             if (!isAllowedExternalPath(fullPath)) {
                 throw new Exception("不允许的外部存储路径，仅支持 Download/Documents/Pictures/DCIM/Movies 等公共目录");
             }
@@ -144,9 +151,12 @@ public class FileWriteTool implements Tool {
      * 检查是否是外部存储简写路径（/Download/...、/Documents/... 等）
      */
     private boolean isShorthandExternalPath(String path) {
-        return path.startsWith("/Download/") || path.startsWith("/Documents/") 
-                || path.startsWith("/Pictures/") || path.startsWith("/DCIM/") 
-                || path.startsWith("/Movies/");
+        for (String shorthand : ALLOWED_SHORTHAND_DIRS) {
+            if (path.startsWith(shorthand)) {
+                return true;
+            }
+        }
+        return false;
     }
     
     /**
