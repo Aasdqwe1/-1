@@ -18,6 +18,7 @@ import java.net.NetworkInterface;
 import java.util.Enumeration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
@@ -29,6 +30,10 @@ public class McpServer {
     // P0 修复：预编译控制字符过滤正则表达式以提升性能
     private static final Pattern CONTROL_CHARS_PATTERN = 
         Pattern.compile("[\\x00\\x01-\\x08\\x0B-\\x0C\\x0E-\\x1F\\x7F-\\x9F]");
+
+    // 心跳检测超时时间（毫秒），用于长时间运行的工具调用
+    // 从 8 秒调整为 30 秒以支持长时间工具执行（如 HTTP 请求、文件操作、命令执行等）
+    private static final long HEARTBEAT_TIMEOUT_MS = 30000L;
 
     private int port;
     private ServerSocket serverSocket;
@@ -327,6 +332,25 @@ public class McpServer {
             out.write(response.getBytes("UTF-8"));
         }
 
+        /**
+         * 检测文本内容是否包含工具调用 JSON（jsonrpc + tools/call）。
+         * 用于避免将工具调用 JSON 当作普通文本返回给用户。
+         * 采用启发式方法：检查 JSON-RPC 标记（"jsonrpc"）和 tools/call 方法。
+         * 虽然可能在极端情况下出现误判，但不会对功能造成负面影响（只是暂时禁用心跳）。
+         */
+        private boolean isToolCallJson(String text) {
+            if (text == null || text.length() == 0) return false;
+            
+            int jsonrpcIdx = text.indexOf("\"jsonrpc\"");
+            if (jsonrpcIdx == -1) return false;
+            
+            int toolsCallIdx = text.indexOf("\"tools/call\"");
+            if (toolsCallIdx == -1) return false;
+            
+            // 确保这两个标记都在同一个 JSON 对象中（简单启发式：都在文本中）
+            return true;
+        }
+
         private String extractJsonRpcFromReply(String reply) {
             if (reply == null || reply.length() == 0) return null;
 
@@ -608,6 +632,8 @@ public class McpServer {
                         // 心跳
                         final AtomicReference<Long> lastActivityAt = new AtomicReference<>(System.currentTimeMillis());
                         final AtomicReference<Boolean> stopHeartbeat = new AtomicReference<>(false);
+                        // 用于标记是否正在接收工具调用 JSON 流：当检测到工具调用时设为 true，接收完成后设为 false
+                        final AtomicBoolean inToolCallStream = new AtomicBoolean(false);
 
                         Thread heartbeat = new Thread(new Runnable() {
                             @Override
@@ -615,11 +641,17 @@ public class McpServer {
                                 try {
                                     int seq = 0;
                                     while (!stopHeartbeat.get()) {
-                                        Thread.sleep(8000);
+                                        Thread.sleep(HEARTBEAT_TIMEOUT_MS);
                                         if (stopHeartbeat.get()) return;
+                                        
+                                        // 如果正在接收工具调用 JSON 流，不发送心跳（避免中断 JSON）
+                                        if (inToolCallStream.get()) {
+                                            continue;
+                                        }
+                                        
                                         long now = System.currentTimeMillis();
                                         long last = lastActivityAt.get();
-                                        if (now - last >= 8000) {
+                                        if (now - last >= HEARTBEAT_TIMEOUT_MS) {
                                             seq++;
                                             JSONObject j = new JSONObject();
                                             j.put("message", "模型处理中...");
@@ -668,9 +700,13 @@ public class McpServer {
                                                 return;
                                             }
                                             // 检测是否为工具调用 JSON（避免把 JSON 当作普通文本塞给用户）
-                                            boolean isToolCall = chunk != null
-                                                && chunk.indexOf("\"jsonrpc\"") != -1
-                                                && chunk.indexOf("\"tools/call\"") != -1;
+                                            boolean isToolCall = isToolCallJson(chunk);
+                                            
+                                            // 防止心跳中断工具调用 JSON 流：当检测到工具调用 JSON 时，禁用心跳
+                                            if (isToolCall) {
+                                                inToolCallStream.set(true);
+                                            }
+                                            
                                             JSONObject j = new JSONObject();
                                             j.put("content", chunk == null ? "" : chunk);
                                             j.put("round", currentRound);
@@ -685,9 +721,10 @@ public class McpServer {
                                     public void onDone(String reply) {
                                         try {
                                             roundReplyRef.set(reply);
-                                            boolean isToolCall = reply != null
-                                                && reply.indexOf("\"jsonrpc\"") != -1
-                                                && reply.indexOf("\"tools/call\"") != -1;
+                                            // 工具调用 JSON 流结束，恢复心跳
+                                            inToolCallStream.set(false);
+                                            
+                                            boolean isToolCall = isToolCallJson(reply);
                                             // P2 修复：记录 LLM 完整回复（非工具调用时），使用截断防止过长日志
                                             if (!isToolCall && reply != null && reply.length() > 0) {
                                                 String logReply = truncateForLogging(reply, 4096);
@@ -710,6 +747,9 @@ public class McpServer {
                                     public void onError(String error) {
                                         try {
                                             roundErrorRef.set(error);
+                                            // 错误时恢复心跳，避免心跳被永久禁用
+                                            inToolCallStream.set(false);
+                                            
                                             JSONObject j = new JSONObject();
                                             j.put("error", error == null ? "未知错误" : error);
                                             j.put("round", currentRound);

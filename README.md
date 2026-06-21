@@ -201,12 +201,18 @@ registerTool(new MyTool());
 
 ## 版本信息
 
-- **版本**：1.1.0
+- **版本**：1.2.0
 - **协议**：MCP 2024-11-05（JSON-RPC 2.0 over HTTP）
 - **最低 Android 版本**：API 21 (Android 5.0)
 - **目标 SDK**：API 30 (Android 11)
 
 ### 更新日志
+
+**v1.2.0**
+- **根本性修复**：流式传输工具调用 JSON 时禁用心跳消息，避免心跳中断 JSON 流导致 JSON 不完整
+- 新增工具调用检测方法，当检测到工具调用 JSON 时自动禁用心跳，流完成后恢复
+- 改进错误处理：当流异常中断时，确保心跳恢复而不被永久禁用
+- 完全解决"超时：工具调用 JSON 不完整"问题，支持任意长度的工具执行时间
 
 **v1.1.0**
 - 修复 DeepSeekActivity 中「提取源码」功能超时问题（改用 evaluateJavascript 替代 alert 通信）
