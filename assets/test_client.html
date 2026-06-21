@@ -79,20 +79,37 @@
        // 安全的 Markdown 渲染函数（兼容旧 WebView）
        function renderMarkdown(text) {
            if (!text) return '';
+           console.log('[renderMarkdown] 输入:', text.substring(0, 200));
            try {
                // 先解码 HTML 实体（防止标签被转义成实体后显示为纯文本）
                var decoded = unescapeHtml(text);
+               console.log('[renderMarkdown] 解码后:', decoded.substring(0, 200));
                if (typeof marked !== 'undefined') {
                    // 优先使用 parseInline（同步、非 Promise）
                    if (typeof marked.parseInline === 'function') {
                        var inline = marked.parseInline(decoded);
-                       if (typeof inline === 'string' && inline.length > 0) return sanitizeHtml(inline);
+                       console.log('[renderMarkdown] parseInline结果:', inline ? inline.substring(0, 200) : '(空)');
+                       if (typeof inline === 'string' && inline.length > 0) {
+                           var sanitized = sanitizeHtml(inline);
+                           console.log('[renderMarkdown] sanitize后:', sanitized ? sanitized.substring(0, 200) : '(空)');
+                           return sanitized;
+                       }
                    }
                    var parsed = marked.parse(decoded);
-                   if (typeof parsed === 'string') return sanitizeHtml(parsed);
+                   console.log('[renderMarkdown] parse结果:', parsed ? parsed.substring(0, 200) : '(空)');
+                   if (typeof parsed === 'string') {
+                       var sanitized2 = sanitizeHtml(parsed);
+                       console.log('[renderMarkdown] sanitize后:', sanitized2 ? sanitized2.substring(0, 200) : '(空)');
+                       return sanitized2;
+                   }
+               } else {
+                   console.log('[renderMarkdown] marked未定义');
                }
-           } catch (e) { }
+           } catch (e) {
+               console.log('[renderMarkdown] 异常:', e.message);
+           }
            // 降级：保留换行的纯文本
+           console.log('[renderMarkdown] 走降级分支');
            return '<pre style="white-space:pre-wrap; word-break:break-word; margin:0; padding:0; border:0; background:transparent;">' + escapeHtml(text) + '</pre>';
        }
     </script>
