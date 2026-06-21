@@ -334,11 +334,20 @@ public class McpServer {
         /**
          * 检测文本内容是否包含工具调用 JSON（jsonrpc + tools/call）。
          * 用于避免将工具调用 JSON 当作普通文本返回给用户。
+         * 采用启发式方法：检查 JSON-RPC 标记（"jsonrpc"）和 tools/call 方法。
+         * 虽然可能在极端情况下出现误判，但不会对功能造成负面影响（只是暂时禁用心跳）。
          */
         private boolean isToolCallJson(String text) {
-            return text != null
-                && text.indexOf("\"jsonrpc\"") != -1
-                && text.indexOf("\"tools/call\"") != -1;
+            if (text == null || text.length() == 0) return false;
+            
+            int jsonrpcIdx = text.indexOf("\"jsonrpc\"");
+            if (jsonrpcIdx == -1) return false;
+            
+            int toolsCallIdx = text.indexOf("\"tools/call\"");
+            if (toolsCallIdx == -1) return false;
+            
+            // 确保这两个标记都在同一个 JSON 对象中（简单启发式：都在文本中）
+            return true;
         }
 
         private String extractJsonRpcFromReply(String reply) {
@@ -711,10 +720,8 @@ public class McpServer {
                                     public void onDone(String reply) {
                                         try {
                                             roundReplyRef.set(reply);
-                                            // 工具调用 JSON 流结束，恢复心跳（仅当之前设置为 true 时）
-                                            if (inToolCallStream.get()) {
-                                                inToolCallStream.set(false);
-                                            }
+                                            // 工具调用 JSON 流结束，恢复心跳
+                                            inToolCallStream.set(false);
                                             
                                             boolean isToolCall = isToolCallJson(reply);
                                             // P2 修复：记录 LLM 完整回复（非工具调用时），使用截断防止过长日志
