@@ -331,6 +331,16 @@ public class McpServer {
             out.write(response.getBytes("UTF-8"));
         }
 
+        /**
+         * 检测文本内容是否包含工具调用 JSON（jsonrpc + tools/call）。
+         * 用于避免将工具调用 JSON 当作普通文本返回给用户。
+         */
+        private boolean isToolCallJson(String text) {
+            return text != null
+                && text.indexOf("\"jsonrpc\"") != -1
+                && text.indexOf("\"tools/call\"") != -1;
+        }
+
         private String extractJsonRpcFromReply(String reply) {
             if (reply == null || reply.length() == 0) return null;
 
@@ -680,9 +690,7 @@ public class McpServer {
                                                 return;
                                             }
                                             // 检测是否为工具调用 JSON（避免把 JSON 当作普通文本塞给用户）
-                                            boolean isToolCall = chunk != null
-                                                && chunk.indexOf("\"jsonrpc\"") != -1
-                                                && chunk.indexOf("\"tools/call\"") != -1;
+                                            boolean isToolCall = isToolCallJson(chunk);
                                             
                                             // 防止心跳中断工具调用 JSON 流：当检测到工具调用 JSON 时，禁用心跳
                                             if (isToolCall) {
@@ -703,12 +711,12 @@ public class McpServer {
                                     public void onDone(String reply) {
                                         try {
                                             roundReplyRef.set(reply);
-                                            // 工具调用 JSON 流结束，恢复心跳
-                                            inToolCallStream.set(false);
+                                            // 工具调用 JSON 流结束，恢复心跳（仅当之前设置为 true 时）
+                                            if (inToolCallStream.get()) {
+                                                inToolCallStream.set(false);
+                                            }
                                             
-                                            boolean isToolCall = reply != null
-                                                && reply.indexOf("\"jsonrpc\"") != -1
-                                                && reply.indexOf("\"tools/call\"") != -1;
+                                            boolean isToolCall = isToolCallJson(reply);
                                             // P2 修复：记录 LLM 完整回复（非工具调用时），使用截断防止过长日志
                                             if (!isToolCall && reply != null && reply.length() > 0) {
                                                 String logReply = truncateForLogging(reply, 4096);
@@ -731,6 +739,9 @@ public class McpServer {
                                     public void onError(String error) {
                                         try {
                                             roundErrorRef.set(error);
+                                            // 错误时恢复心跳，避免心跳被永久禁用
+                                            inToolCallStream.set(false);
+                                            
                                             JSONObject j = new JSONObject();
                                             j.put("error", error == null ? "未知错误" : error);
                                             j.put("round", currentRound);
