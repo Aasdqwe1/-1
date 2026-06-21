@@ -4,9 +4,12 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+
 /**
- * CMD 命令执行工具（Windows 命令提示符）
- * 注意：在 Android 系统上 CMD 命令不可用，此工具仅用于兼容 Windows 环境
+ * CMD 命令执行工具
+ * 支持 Android 和 Windows 系统
  */
 public class CmdTool implements Tool {
 
@@ -17,7 +20,7 @@ public class CmdTool implements Tool {
 
     @Override
     public String getDescription() {
-        return "在 Windows 系统上执行 CMD 命令，返回命令输出结果。Android 设备上不可用";
+        return "执行 CMD 命令，Android 上使用 /system/bin/cmd，Windows 上使用 cmd.exe";
     }
 
     @Override
@@ -30,7 +33,7 @@ public class CmdTool implements Tool {
 
             JSONObject command = new JSONObject();
             command.put("type", "string");
-            command.put("description", "要执行的 CMD 命令，如 \"dir\"、\"ipconfig\"、\"netstat -an\"");
+            command.put("description", "要执行的 CMD 命令，如 \"ls\"、\"pm list packages\"、\"dumpsys battery\"");
             properties.put("command", command);
 
             JSONObject timeout = new JSONObject();
@@ -52,8 +55,90 @@ public class CmdTool implements Tool {
 
     @Override
     public String execute(JSONObject arguments) throws Exception {
-        // Android 系统不支持 CMD 命令
-        return "错误: CMD 命令在 Android 系统上不可用。请使用 shell 工具执行 shell 命令。\n\n" +
-               "在 Windows PC 上，CMD 命令可通过远程服务执行。";
+        String command = arguments.getString("command");
+        int timeout = arguments.has("timeout") ? arguments.getInt("timeout") : 30;
+
+        if (command == null || command.trim().isEmpty()) {
+            throw new Exception("命令不能为空");
+        }
+
+        // 安全限制：禁止某些危险命令
+        String lowerCmd = command.toLowerCase();
+        if (lowerCmd.contains("reboot") || lowerCmd.contains("shutdown")
+                || lowerCmd.contains("mkfs") || lowerCmd.contains("dd if=")) {
+            throw new Exception("禁止执行危险命令");
+        }
+
+        StringBuilder output = new StringBuilder();
+        StringBuilder errorOutput = new StringBuilder();
+
+        try {
+            // Android 使用 /system/bin/cmd，Windows 使用 cmd.exe
+            String cmdPrefix = System.getProperty("os.name").toLowerCase().contains("windows")
+                    ? "cmd.exe /c" : "/system/bin/cmd";
+
+            Process process = Runtime.getRuntime().exec(cmdPrefix + " " + command);
+
+            // 读取输出
+            Thread stdoutThread = new Thread(() -> {
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        output.append(line).append("\n");
+                    }
+                } catch (Exception e) {
+                    errorOutput.append("读取输出失败: ").append(e.getMessage()).append("\n");
+                }
+            });
+
+            // 读取错误输出
+            Thread stderrThread = new Thread(() -> {
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        errorOutput.append(line).append("\n");
+                    }
+                } catch (Exception e) {
+                    // ignore
+                }
+            });
+
+            stdoutThread.start();
+            stderrThread.start();
+
+            // 等待命令执行完成
+            long startTime = System.currentTimeMillis();
+            while (System.currentTimeMillis() - startTime < timeout * 1000L) {
+                if (process.waitFor(100, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    break;
+                }
+            }
+
+            int exitValue = process.exitValue();
+            stdoutThread.join(1000);
+            stderrThread.join(1000);
+
+            StringBuilder result = new StringBuilder();
+            result.append("命令: ").append(command).append("\n");
+            result.append("退出码: ").append(exitValue).append("\n\n");
+
+            if (output.length() > 0) {
+                result.append("输出:\n").append(output.toString());
+            }
+
+            if (errorOutput.length() > 0) {
+                result.append("错误:\n").append(errorOutput.toString());
+            }
+
+            if (process.isAlive()) {
+                process.destroy();
+                result.append("\n命令执行超时（").append(timeout).append("秒），已被终止");
+            }
+
+            return result.toString();
+
+        } catch (Exception e) {
+            throw new Exception("执行命令失败: " + e.getMessage());
+        }
     }
 }
