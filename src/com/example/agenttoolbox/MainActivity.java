@@ -247,19 +247,20 @@ public class MainActivity extends Activity {
     }
     
     /**
-     * 添加日志
+     * 添加日志（新日志显示在最上面）
      */
     private void appendLog(String message) {
-        logBuilder.append("[").append(getCurrentTime()).append("] ")
-            .append(message).append("\n");
+        String newLog = "[" + getCurrentTime() + "] " + message + "\n";
+        // 将新日志插入到开头，使最新的日志显示在最上面
+        logBuilder.insert(0, newLog);
         tvLog.setText(logBuilder.toString());
         
-        // 自动滚动到底部
+        // 自动滚动到顶部
         final ScrollView scrollView = (ScrollView) tvLog.getParent();
         scrollView.post(new Runnable() {
             @Override
             public void run() {
-                scrollView.fullScroll(View.FOCUS_DOWN);
+                scrollView.scrollTo(0, 0);
             }
         });
     }
