@@ -671,9 +671,10 @@ public class McpServer {
                                             boolean isToolCall = reply != null
                                                 && reply.indexOf("\"jsonrpc\"") != -1
                                                 && reply.indexOf("\"tools/call\"") != -1;
-                                            // 记录 LLM 完整回复（非工具调用时）
+                                            // P2 修复：记录 LLM 完整回复（非工具调用时），使用截断防止过长日志
                                             if (!isToolCall && reply != null && reply.length() > 0) {
-                                                log("LLM最终回复[轮次" + currentRound + "]: " + reply);
+                                                String logReply = truncateForLogging(reply, 4096);
+                                                log("LLM最终回复[轮次" + currentRound + "]: " + logReply);
                                             }
                                             JSONObject j = new JSONObject();
                                             j.put("content", reply == null ? "" : reply);
@@ -736,10 +737,10 @@ public class McpServer {
                                 break;
                             }
 
-                            log("检测到工具调用: " + toolJson);
+                            log("检测到工具调用: " + truncateForLogging(toolJson, 4096));
                             log("执行工具中...");
                             String toolResult = executeToolCall(toolJson);
-                            log("工具执行结果: " + toolResult);
+                            log("工具执行结果: " + truncateForLogging(toolResult, 4096));
                             if (toolResult == null || toolResult.isEmpty()) {
                                 toolResult = "工具执行返回空结果";
                             }

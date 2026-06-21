@@ -818,6 +818,27 @@ public class DeepSeekChatBridge {
         }
     }
 
+    /**
+     * P2 修复：对长消息进行智能截断，便于日志记录
+     * 保留首尾内容，中间内容用省略号表示
+     */
+    private String formatLongMessageForLog(String message, int maxLen) {
+        if (message == null) return "";
+        if (message.length() <= maxLen) {
+            return message;
+        }
+        
+        int frontLen = maxLen / 3;
+        int backLen = maxLen / 3;
+        String front = message.substring(0, frontLen);
+        String back = message.substring(message.length() - backLen);
+        int middleLen = message.length() - frontLen - backLen;
+        return front + "...[省略 " + middleLen + " 字符]..." + back;
+    }
+
+    /**
+     * P2 修复：完整记录 DeepSeek 回复内容
+     */
     public void onDeepSeekReply(String requestId, String reply) {
         if (requestId == null) return;
         // 若 JS 回传了空回复，先在 Java 侧做一次备用 DOM 提取再放行
@@ -831,8 +852,12 @@ public class DeepSeekChatBridge {
         if (ref != null) ref.set(reply);
         CountDownLatch l = latchById.get(requestId);
         if (l != null) l.countDown();
+        
+        // P2 修复：增加完整内容日志，支持 4096 字节缓冲
+        String logMsg = formatLongMessageForLog(reply, 4096);
         android.util.Log.d("DeepSeekChatBridge",
-            "[" + requestId + "] 捕获回复 (长度=" + reply.length() + ")");
+            "[" + requestId + "] 捕获回复 (长度=" + reply.length() + ")" + 
+            "\n内容: " + logMsg);
     }
 
     /**
