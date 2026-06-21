@@ -335,6 +335,22 @@ public class DeepSeekChatBridge {
             "    return false;\n" +
             "  }\n" +
             "\n" +
+            "  // 检测发送按钮是否处于可发送状态（没有暂停/停止图标）\n" +
+            "  function isSendButtonReady() {\n" +
+            "    var sendBtn = document.querySelector('div[role=\"button\"][class*=\"ds-button--primary\"]');\n" +
+            "    if (!sendBtn) return false;\n" +
+            "    var svg = sendBtn.querySelector('svg');\n" +
+            "    if (!svg) return false;\n" +
+            "    var svgHtml = svg.innerHTML || '';\n" +
+            "    if (svgHtml.indexOf('<rect') !== -1 ||\n" +
+            "        svgHtml.indexOf('pause') !== -1 ||\n" +
+            "        svgHtml.indexOf('stop') !== -1 ||\n" +
+            "        svgHtml.indexOf('stop-circle') !== -1) {\n" +
+            "      return false;\n" +
+            "    }\n" +
+            "    return true;\n" +
+            "  }\n" +
+            "\n" +
             "  // ===== D. 主循环：每 500ms 检查是否新增了 AI 消息 =====\n" +
             "  function finish(reply) {\n" +
             "    if (finished) return;\n" +
@@ -353,7 +369,7 @@ public class DeepSeekChatBridge {
             "    \n" +
             "    // 没有任何AI消息，继续等待\n" +
             "    if (list.length === 0) {\n" +
-            "      if (pollCount > 180) {\n" +
+            "      if (pollCount > 240) {\n" +
             "        finish('');\n" +
             "        Android.onDeepSeekError(__rid, '超时：未捕获到任何AI消息');\n" +
             "      }\n" +
@@ -367,9 +383,11 @@ public class DeepSeekChatBridge {
             "    // 每10次轮询输出一次调试信息\n" +
             "    if (pollCount % 10 === 1 || pollCount <= 3) {\n" +
             "      var debugPreview = reply ? reply.substring(0, 80) : '';\n" +
+            "      var sendReady = isSendButtonReady();\n" +
             "      Android.log('[DEBUG][' + __rid + '] 轮询#' + pollCount + \n" +
             "        ' 消息数=' + list.length + \n" +
             "        ' 生成中=' + gen + \n" +
+            "        ' 发送就绪=' + sendReady + \n" +
             "        ' 回复长度=' + (reply ? reply.length : 0) + \n" +
             "        ' 稳定次数=' + sameLenStable + \n" +
             "        ' 预览=\"' + debugPreview + '\"');\n" +
@@ -384,7 +402,7 @@ public class DeepSeekChatBridge {
             "    \n" +
             "    // 内容太短，继续等待\n" +
             "    if (!reply || reply.length < 2) {\n" +
-            "      if (pollCount > 180) {\n" +
+            "      if (pollCount > 240) {\n" +
             "        finish('');\n" +
             "        Android.onDeepSeekError(__rid, '超时：AI消息内容为空');\n" +
             "      }\n" +
@@ -405,17 +423,18 @@ public class DeepSeekChatBridge {
             "      lastSeenText = reply;\n" +
             "    }\n" +
             "\n" +
-            "    // 完成判定：操作栏出现 或 (内容稳定4秒且超过50字符)\n" +
+            "    // 完成判定：操作栏出现 或 (内容稳定且足够长) 或 (发送按钮就绪且内容非空)\n" +
             "    var complete = isLatestReplyComplete(latestEl);\n" +
             "    var stableEnough = sameLenStable >= 8;\n" +
             "    var hasMinimumLength = reply.length > 50;\n" +
-            "    if (complete || (stableEnough && hasMinimumLength)) {\n" +
+            "    var sendReady = isSendButtonReady();\n" +
+            "    if (complete || (stableEnough && hasMinimumLength) || (sendReady && reply.length > 30)) {\n" +
             "      finish(reply);\n" +
             "      return;\n" +
             "    }\n" +
             "\n" +
             "    // 最长 90 秒超时：有部分内容就返回已有内容\n" +
-            "    if (pollCount > 180) {\n" +
+            "    if (pollCount > 240) {\n" +
             "      finish(reply || '');\n" +
             "    }\n" +
             "  }\n" +
