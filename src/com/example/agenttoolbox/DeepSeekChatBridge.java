@@ -617,7 +617,7 @@ public class DeepSeekChatBridge {
             "        sameLenStable = 0;\n" +
             "        Android.log('[DEBUG][' + __rid + '] JSON不完整，检查LLM生成状态（已检测到jsonrpc/tools/call）');\n" +
             "        // 根本性修复：仅当LLM停止生成且JSON仍不完整时才报错\n" +
-            "        // 如果LLM还在生成，就无限等待直到生成完成（不受轮询次数限制）\n" +
+            "        // 如果LLM还在生成，就继续等待（有10分钟的最后防护超时）\n" +
             "        var gen = isGenerating();\n" +
             "        if (!gen) {\n" +
             "          // LLM已停止生成，但JSON仍不完整 = 真实错误\n" +
@@ -626,8 +626,15 @@ public class DeepSeekChatBridge {
             "          if (window[__prefix + 'poll']) clearInterval(window[__prefix + 'poll']);\n" +
             "          if (window[__prefix + 'obs']) { try { window[__prefix + 'obs'].disconnect(); } catch(_e) {} }\n" +
             "          finished = true;\n" +
+            "        } else if (pollCount > 1200) {\n" +
+            "          // 最后防护：10分钟后仍在生成状态，则强制停止（防止无限等待）\n" +
+            "          Android.log('[DEBUG][' + __rid + '] TIMEOUT: LLM仍在生成但超过10分钟限制（pollCount=' + pollCount + '）');\n" +
+            "          Android.onDeepSeekError(__rid, '流式传输超时（LLM生成超过10分钟）');\n" +
+            "          if (window[__prefix + 'poll']) clearInterval(window[__prefix + 'poll']);\n" +
+            "          if (window[__prefix + 'obs']) { try { window[__prefix + 'obs'].disconnect(); } catch(_e) {} }\n" +
+            "          finished = true;\n" +
             "        } else {\n" +
-            "          // LLM还在生成中 - 继续等待，无超时限制\n" +
+            "          // LLM还在生成中 - 继续等待（无超时限制，除非超过10分钟）\n" +
             "          Android.log('[DEBUG][' + __rid + '] LLM仍在生成，继续等待JSON流完成（pollCount=' + pollCount + '）');\n" +
             "        }\n" +
             "        return; // 跳过后续稳定判定\n" +
