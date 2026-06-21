@@ -2059,7 +2059,11 @@
                     if (displayText.indexOf('🔧') === 0 && !finalContent) {
                         // 保留工具调用提示，不覆盖
                     } else {
-                        bubbleEl.innerHTML = '<div class="md-body">' + renderMarkdown(displayText) + '</div>';
+                        var rendered = renderMarkdown(displayText);
+                        console.log('[DEBUG-HTML] renderMarkdown返回值:', rendered ? rendered.substring(0, 200) : '(空)');
+                        bubbleEl.innerHTML = '<div class="md-body">' + rendered + '</div>';
+                        console.log('[DEBUG-HTML] 设置后innerHTML:', bubbleEl.innerHTML ? bubbleEl.innerHTML.substring(0, 200) : '(空)');
+                        console.log('[DEBUG-HTML] 设置后innerText:', bubbleEl.innerText ? bubbleEl.innerText.substring(0, 200) : '(空)');
                     }
                 }
                 chatMessages.scrollTop = chatMessages.scrollHeight;
