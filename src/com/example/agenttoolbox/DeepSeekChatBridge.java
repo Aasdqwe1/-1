@@ -465,36 +465,48 @@ public class DeepSeekChatBridge {
             "      completionStartTime = 0;\n" +
             "    }\n" +
             "\n" +
-            "    // JSON 完整性检查（针对工具调用）\n" +
-            "    var isJsonRpcCall = reply.indexOf('\"jsonrpc\"') !== -1 && reply.indexOf('\"tools/call\"') !== -1;\n" +
-            "    if (isJsonRpcCall) {\n" +
-            "      var trimmed = reply.trim();\n" +
-            "      var isCompleteJson = false;\n" +
-            "      try {\n" +
-            "        JSON.parse(trimmed);\n" +
-            "        isCompleteJson = true;\n" +
-            "      } catch(e) {\n" +
-            "        isCompleteJson = false;\n" +
+            "    // 检测是否为工具调用 JSON-RPC\n" +
+            "    var isToolCall = reply.indexOf('\"jsonrpc\"') !== -1 && reply.indexOf('\"tools/call\"') !== -1;\n" +
+            "\n" +
+            "    if (isToolCall) {\n" +
+            "      // 尝试提取并验证 JSON\n" +
+            "      var jsonStr = null;\n" +
+            "      var firstBrace = reply.indexOf('{');\n" +
+            "      var lastBrace = reply.lastIndexOf('}');\n" +
+            "      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {\n" +
+            "        jsonStr = reply.substring(firstBrace, lastBrace + 1);\n" +
             "      }\n" +
-            "      if (!isCompleteJson) {\n" +
-            "        // JSON 不完整，重置冷却并跳过完成判定\n" +
+            "      var isComplete = false;\n" +
+            "      if (jsonStr) {\n" +
+            "        try {\n" +
+            "          JSON.parse(jsonStr);\n" +
+            "          isComplete = true;\n" +
+            "          // 把提取出的完整 JSON 赋给 reply，确保传递的是纯 JSON\n" +
+            "          reply = jsonStr;\n" +
+            "        } catch(e) {\n" +
+            "          isComplete = false;\n" +
+            "        }\n" +
+            "      }\n" +
+            "      if (!isComplete) {\n" +
+            "        // JSON 不完整，重置冷却并继续等待\n" +
             "        if (completionReady) {\n" +
             "          completionReady = false;\n" +
             "          completionStartTime = 0;\n" +
             "          Android.log('[DEBUG][' + __rid + '] JSON不完整，重置冷却');\n" +
             "        }\n" +
-            "        // 超时后报告错误，而不是强制 finish\n" +
+            "        // 超时则报错，不调用 finish\n" +
             "        if (pollCount > 240) {\n" +
-            "          Android.onDeepSeekError(__rid, '超时：JSON-RPC调用不完整');\n" +
+            "          Android.onDeepSeekError(__rid, '超时：工具调用JSON不完整');\n" +
             "          if (window[__prefix + 'poll']) clearInterval(window[__prefix + 'poll']);\n" +
             "          if (window[__prefix + 'obs']) { try { window[__prefix + 'obs'].disconnect(); } catch(_e) {} }\n" +
             "          finished = true;\n" +
             "        }\n" +
-            "        return; // 重要：跳过后续完成判定\n" +
+            "        return; // 跳过后续完成判定\n" +
             "      } else {\n" +
-            "        Android.log('[DEBUG][' + __rid + '] 检测到完整JSON-RPC调用');\n" +
+            "        Android.log('[DEBUG][' + __rid + '] 成功提取并验证JSON-RPC调用');\n" +
             "      }\n" +
             "    }\n" +
+            "    // 如果是普通回复（非工具调用），继续走原有的稳定判定\n" +
             "\n" +
             "    // 完成判定：采用冷却机制，内容稳定后再等 2.5 秒\n" +
             "    var MIN_LENGTH = 5;\n" +
