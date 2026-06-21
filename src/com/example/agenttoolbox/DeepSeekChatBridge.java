@@ -331,6 +331,12 @@ public class DeepSeekChatBridge {
             "    md = md.replace(/&lt;/g, '<');\n" +
             "    md = md.replace(/&gt;/g, '>');\n" +
             "    md = md.replace(/&amp;/g, '&');\n" +
+            "    // 修复：实体解码后再做一次HTML标签清理\n" +
+            "    // 防止标签被转义成实体后，绕过前面的标签移除逻辑\n" +
+            "    md = md.replace(/<[^>]+>/g, '');\n" +
+            "    // 再次清理多余空行\n" +
+            "    md = md.replace(/\\n{3,}/g, '\\n\\n');\n" +
+            "    md = md.trim();\n" +
             "    // 返回非空内容或null，允许fallback机制使用innerText\n" +
             "    return md.length > 0 ? md : null;\n" +
             "  }\n" +
