@@ -465,7 +465,8 @@ public class DeepSeekChatBridge {
             "\n" +
             "    // 没有任何AI消息，继续等待\n" +
             "    if (list.length === 0) {\n" +
-            "      if (pollCount > 240) {\n" +
+            "      // 超时时间从 240 (2分钟) 增加到 600 (5分钟)，支持更长的生成时间\n" +
+            "      if (pollCount > 600) {\n" +
             "        finish('');\n" +
             "        Android.onDeepSeekError(__rid, '超时：未捕获到任何AI消息');\n" +
             "      }\n" +
@@ -491,7 +492,8 @@ public class DeepSeekChatBridge {
             "        }\n" +
             "      }\n" +
             "      if (!detectedNewMessage) {\n" +
-            "        if (pollCount > 240) {\n" +
+            "        // 超时时间从 240 (2分钟) 增加到 600 (5分钟)，支持更长的生成时间\n" +
+            "        if (pollCount > 600) {\n" +
             "          // 超时前最后一次备用提取\n" +
             "          var lastTry = getAssistantReplyFallback();\n" +
             "          if (lastTry && lastTry.length > 5) {\n" +
@@ -607,19 +609,33 @@ public class DeepSeekChatBridge {
             "        finish(reply);\n" +
             "        return;\n" +
             "      } else {\n" +
-            "        // JSON 不完整：重置冷却，继续等待\n" +
+            "        // JSON 不完整：根本性修复 - 检查LLM生成状态\n" +
             "        if (completionReady) {\n" +
             "          completionReady = false;\n" +
             "          completionStartTime = 0;\n" +
             "        }\n" +
             "        sameLenStable = 0;\n" +
-            "        Android.log('[DEBUG][' + __rid + '] JSON不完整，继续等待（已检测到jsonrpc/tools/call）');\n" +
-            "        // 超时：报错；不调用 finish，避免回传残缺文本导致工具调用失败\n" +
-            "        if (pollCount > 240) {\n" +
-            "          Android.onDeepSeekError(__rid, '超时：工具调用JSON不完整');\n" +
+            "        Android.log('[DEBUG][' + __rid + '] JSON不完整，检查LLM生成状态（已检测到jsonrpc/tools/call）');\n" +
+            "        // 根本性修复：仅当LLM停止生成且JSON仍不完整时才报错\n" +
+            "        // 如果LLM还在生成，就继续等待（有10分钟的最后防护超时）\n" +
+            "        var gen = isGenerating();\n" +
+            "        if (!gen) {\n" +
+            "          // LLM已停止生成，但JSON仍不完整 = 真实错误\n" +
+            "          Android.log('[DEBUG][' + __rid + '] ERROR: LLM已停止生成但JSON仍不完整（pollCount=' + pollCount + '）');\n" +
+            "          Android.onDeepSeekError(__rid, '工具调用JSON不完整（LLM已停止生成）');\n" +
             "          if (window[__prefix + 'poll']) clearInterval(window[__prefix + 'poll']);\n" +
             "          if (window[__prefix + 'obs']) { try { window[__prefix + 'obs'].disconnect(); } catch(_e) {} }\n" +
             "          finished = true;\n" +
+            "        } else if (pollCount > 1200) {\n" +
+            "          // 最后防护：10分钟后仍在生成状态，则强制停止（防止无限等待）\n" +
+            "          Android.log('[DEBUG][' + __rid + '] TIMEOUT: LLM仍在生成但超过10分钟限制（pollCount=' + pollCount + '）');\n" +
+            "          Android.onDeepSeekError(__rid, '流式传输超时（LLM生成超过10分钟）');\n" +
+            "          if (window[__prefix + 'poll']) clearInterval(window[__prefix + 'poll']);\n" +
+            "          if (window[__prefix + 'obs']) { try { window[__prefix + 'obs'].disconnect(); } catch(_e) {} }\n" +
+            "          finished = true;\n" +
+            "        } else {\n" +
+            "          // LLM还在生成中 - 继续等待（无超时限制，除非超过10分钟）\n" +
+            "          Android.log('[DEBUG][' + __rid + '] LLM仍在生成，继续等待JSON流完成（pollCount=' + pollCount + '）');\n" +
             "        }\n" +
             "        return; // 跳过后续稳定判定\n" +
             "      }\n" +
@@ -629,7 +645,8 @@ public class DeepSeekChatBridge {
             "\n" +
             "    // 内容太短，继续等待\n" +
             "    if (!reply || reply.length < 2) {\n" +
-            "      if (pollCount > 240) {\n" +
+            "      // 超时时间从 240 (2分钟) 增加到 600 (5分钟)，支持更长的生成时间\n" +
+            "      if (pollCount > 600) {\n" +
             "        // 超时前尝试备用提取\n" +
             "        var fallbackEmpty = getAssistantReplyFallback();\n" +
             "        if (fallbackEmpty && fallbackEmpty.length > 5) {\n" +
@@ -685,7 +702,8 @@ public class DeepSeekChatBridge {
             "    }\n" +
             "\n" +
             "    // 超时兜底（普通回复）：有部分内容就返回\n" +
-            "    if (pollCount > 240) {\n" +
+            "    // 超时时间从 240 (2分钟) 增加到 600 (5分钟)，支持更长的生成时间\n" +
+            "    if (pollCount > 600) {\n" +
             "      finish(reply || '');\n" +
             "    }\n" +
             "  }\n" +
