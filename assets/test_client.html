@@ -13,28 +13,60 @@
                 gfm: true          // GitHub Flavored Markdown
             });
         }
-       // 简单的HTML标签清理函数（移除潜在的XSS风险标签）
+        
+       // 安全的HTML标签清理函数 - 使用allowlist方式
        function sanitizeHtml(html) {
            if (!html) return '';
-           const div = document.createElement('div');
-           div.innerHTML = html;
             
-           // 移除可能危险的元素
-           const dangerousTags = ['script', 'iframe', 'object', 'embed'];
-           dangerousTags.forEach(tag => {
-               div.querySelectorAll(tag).forEach(el => el.remove());
-           });
-            
-           // 移除事件处理器属性
-           div.querySelectorAll('*').forEach(el => {
-               Array.from(el.attributes).forEach(attr => {
-                   if (attr.name.startsWith('on')) {
-                       el.removeAttribute(attr.name);
+           // 使用 DOMParser 解析 HTML，避免在设置 innerHTML 时执行脚本
+           try {
+               const parser = new DOMParser();
+               const doc = parser.parseFromString(html, 'text/html');
+                
+               // 允许的标签（常见的Markdown输出）
+               const allowedTags = new Set(['P', 'BR', 'STRONG', 'B', 'EM', 'I', 'U', 'CODE', 'PRE', 
+                                            'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'UL', 'OL', 'LI', 
+                                            'BLOCKQUOTE', 'A', 'TABLE', 'THEAD', 'TBODY', 'TR', 'TH', 'TD']);
+                
+               // 递归清理危险元素和属性
+               function cleanNode(node) {
+                   if (node.nodeType === 3) return; // 文本节点保留
+                   if (node.nodeType === 8) { node.remove(); return; } // 注释节点移除
+                    
+                   const tagName = node.tagName;
+                   if (!allowedTags.has(tagName)) {
+                       // 不在允许列表中，用其子节点替换此节点
+                       while (node.firstChild) {
+                           node.parentNode.insertBefore(node.firstChild, node);
+                       }
+                       node.remove();
+                       return;
                    }
-               });
-           });
-            
-           return div.innerHTML;
+                    
+                   // 移除所有属性，除了href（仅用于链接安全性检查）
+                   const attrNames = Array.from(node.attributes).map(attr => attr.name);
+                   attrNames.forEach(attr => {
+                       if (attr === 'href') {
+                           // 只允许 http/https/mailto 协议
+                           const href = node.getAttribute('href');
+                           if (!href || !/^(https?:|mailto:)/.test(href)) {
+                               node.removeAttribute('href');
+                           }
+                       } else {
+                           node.removeAttribute(attr);
+                       }
+                   });
+                    
+                   // 递归处理子节点
+                   Array.from(node.childNodes).forEach(cleanNode);
+               }
+                
+               cleanNode(doc.body);
+               return doc.body.innerHTML;
+           } catch (e) {
+               // 如果 DOMParser 失败，返回纯文本
+               return escapeHtml(html);
+           }
        }
         
        // 安全的 Markdown 渲染函数（兼容旧 WebView）
@@ -1070,7 +1102,7 @@
             const div = document.createElement('div');
             div.className = 'message user';
             div.innerHTML =
-                `<div class="message-avatar">U</div><div class="message-content"><div class="message-label">你</div><div class="message-bubble" style="white-space:pre-wrap;">${renderMarkdown(text)}</div></div>`;
+                `<div class="message-avatar">U</div><div class="message-content"><div class="message-label">你</div><div class="message-bubble" style="white-space:pre-wrap;">${escapeHtml(text)}</div></div>`;
             chatMessages.appendChild(div);
             chatMessages.scrollTop = chatMessages.scrollHeight;
         }
