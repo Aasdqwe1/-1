@@ -370,12 +370,33 @@ public class DeepSeekChatBridge {
             "    }\n" +
             "    // 必须有**新增**的消息（index >= baseline）\n" +
             "    if (list.length <= baseline) {\n" +
-            "      var maxPoll = gen ? 480 : 120;\n" +
-            "      if (pollCount > maxPoll) {\n" +
-            "        finish('');\n" +
-            "        Android.onDeepSeekError(__rid, gen ? '超时：生成中但未完成（超过240秒）' : '超时未捕获到新回复');\n" +
+            "      // 兜底检测：如果生成已停止且最后一条消息有内容，可能是页面未触发新增事件\n" +
+            "      if (!gen && list.length > 0) {\n" +
+            "        var lastEl = list[list.length - 1];\n" +
+            "        var lastReply = getAssistantReply(lastEl);\n" +
+            "        if (lastReply && lastReply.length > 30) {\n" +
+            "          // 更新baseline，避免重复捕获\n" +
+            "          baseline = list.length;\n" +
+            "          Android.log('[DEBUG][' + __rid + '] 兜底检测：使用最后一条消息，长度=' + lastReply.length);\n" +
+            "        } else {\n" +
+            "          var maxPoll = gen ? 180 : 120;\n" +
+            "          if (pollCount > maxPoll) {\n" +
+            "            finish('');\n" +
+            "            Android.onDeepSeekError(__rid, gen ? '超时：生成中但未完成（超过90秒）' : '超时未捕获到新回复');\n" +
+            "          }\n" +
+            "          return;\n" +
+            "        }\n" +
+            "      } else {\n" +
+            "        var maxPoll = gen ? 180 : 120;\n" +
+            "        if (pollCount > maxPoll) {\n" +
+            "          finish('');\n" +
+            "          Android.onDeepSeekError(__rid, gen ? '超时：生成中但未完成（超过90秒）' : '超时未捕获到新回复');\n" +
+            "        }\n" +
+            "        return;\n" +
             "      }\n" +
-            "      return;\n" +
+            "    } else {\n" +
+            "      // 检测到新消息，更新baseline\n" +
+            "      baseline = list.length;\n" +
             "    }\n" +
             "    var latestEl = list[list.length - 1];\n" +
             "    var reply = getAssistantReply(latestEl);\n" +
