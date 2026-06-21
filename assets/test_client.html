@@ -42,13 +42,15 @@
                     
                    const tagName = node.tagName;
                    if (!allowedTags.has(tagName)) {
-                       // Not in allowlist, replace node with its children
-                       while (node.firstChild) {
-                           node.parentNode.insertBefore(node.firstChild, node);
-                       }
-                       node.remove();
-                       return;
-                   }
+                      // 先递归清洗子节点（避免嵌套的危险标签逃过处理）
+                      Array.from(node.childNodes).forEach(cleanNode);
+                      // 然后将子节点提升到父节点，再移除自身
+                      while (node.firstChild) {
+                          node.parentNode.insertBefore(node.firstChild, node);
+                      }
+                      node.remove();
+                      return;
+                  }
                     
                    // 移除所有属性，除了href（仅用于链接安全性检查）
                    Array.from(node.attributes).forEach(attr => {
@@ -68,7 +70,8 @@
                    Array.from(node.childNodes).forEach(cleanNode);
                }
                 
-               cleanNode(doc.body);
+               if (!doc.body) return escapeHtml(html);
+               Array.from(doc.body.childNodes).forEach(cleanNode);
                return doc.body.innerHTML;
            } catch (e) {
                // 如果 DOMParser 失败，返回纯文本
