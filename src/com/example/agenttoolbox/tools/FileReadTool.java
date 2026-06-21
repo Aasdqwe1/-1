@@ -34,7 +34,7 @@ public class FileReadTool implements Tool {
             
             JSONObject path = new JSONObject();
             path.put("type", "string");
-            path.put("description", "文件路径，支持：1) 相对路径（内部存储）；2) /storage/emulated/0/...（外部存储，需授权）；3) /Download/xxx.txt（外部存储 Download 目录）");
+            path.put("description", "文件路径，支持：1) 相对路径（内部存储）；2) /storage/emulated/0/...（外部存储，需授权）；3) /Download/、/Documents/ 等简写");
             properties.put("path", path);
             
             JSONObject encoding = new JSONObject();
@@ -75,7 +75,8 @@ public class FileReadTool implements Tool {
             // 外部存储完整路径
             file = new File(path);
         } else if (path.startsWith("/Download/") || path.startsWith("/Documents/") 
-                || path.startsWith("/Pictures/") || path.startsWith("/")) {
+                || path.startsWith("/Pictures/") || path.startsWith("/DCIM/") 
+                || path.startsWith("/Movies/") || path.startsWith("/")) {
             // 外部存储简写路径，转换为完整路径
             file = new File(getExternalStorageDir(), path.substring(1));
         } else {

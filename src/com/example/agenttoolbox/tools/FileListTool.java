@@ -31,7 +31,7 @@ public class FileListTool implements Tool {
             
             JSONObject path = new JSONObject();
             path.put("type", "string");
-            path.put("description", "目录路径，支持：1) 相对路径（内部存储）；2) /Download/AgentToolbox 等简写；3) 完整外部路径；不填则列出内部存储");
+            path.put("description", "目录路径，支持：1) 相对路径（内部存储）；2) /Download/、/Documents/、/Pictures/、/DCIM/、/Movies/ 等简写；3) /storage/emulated/0/... 完整外部路径；不填则列出内部存储");
             properties.put("path", path);
             
             schema.put("properties", properties);
@@ -60,7 +60,8 @@ public class FileListTool implements Tool {
                 // 外部存储完整路径
                 dir = new File(path);
             } else if (path.startsWith("/Download/") || path.startsWith("/Documents/") 
-                    || path.startsWith("/Pictures/") || path.startsWith("/")) {
+                    || path.startsWith("/Pictures/") || path.startsWith("/DCIM/") 
+                    || path.startsWith("/Movies/") || path.startsWith("/")) {
                 // 外部存储简写路径
                 dir = new File(getExternalStorageDir(), path.substring(1));
             } else {
