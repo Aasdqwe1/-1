@@ -79,38 +79,51 @@
            }
        }
         
-       // 安全的 Markdown 渲染函数（兼容旧 WebView）
+       // 安全的 Markdown 渲染函数（优先使用 marked.parse 以支持表格、列表、代码块等块级元素）
        function renderMarkdown(text) {
            if (!text) return '';
            console.log('[renderMarkdown] 输入:', text.substring(0, 200));
-           // 内容结构快速分析（快速检测是否含各种 Markdown 结构）
+           // 内容结构快速分析
            var hasCodeBlock = (text.match(/```/g) || []).length;
            var hasInlineCode = (text.match(/`[^`\n]+`/g) || []).length;
            var hasHeading = (text.match(/\n#{1,6}\s/g) || []).length;
            var hasTable = (text.match(/\|\s*[^|\n]+\s*\|\s*[^|\n]+\s*\|/g) || []).length;
            var hasList = (text.match(/\n\s*[-*+]\s/g) || []).length;
            var hasEntity = /&(?:amp|lt|gt|quot|#39);/.test(text);
+           var needBlockParse = (hasCodeBlock > 0 || hasHeading > 0 || hasTable > 0 || hasList > 0);
            console.log('[renderMarkdown] 结构分析: 代码块=' + (hasCodeBlock/2) + ' 行内代码=' + hasInlineCode
                + ' 标题=' + hasHeading + ' 表格=' + hasTable + ' 列表项=' + hasList
-               + ' 长度=' + text.length + ' HTML实体=' + hasEntity);
+               + ' 长度=' + text.length + ' 需要块级解析=' + needBlockParse);
            try {
                var decoded = unescapeHtml(text);
                console.log('[renderMarkdown] 解码后:', decoded.substring(0, 200));
                if (typeof marked !== 'undefined') {
-                   if (typeof marked.parseInline === 'function') {
-                       var inline = marked.parseInline(decoded);
-                       console.log('[renderMarkdown] parseInline结果:', inline ? inline.substring(0, 200) : '(空)');
-                       if (typeof inline === 'string' && inline.length > 0) {
-                           var sanitized = sanitizeHtml(inline);
+                   // 优先使用 marked.parse() — 完整解析表格/标题/列表/代码块等块级元素
+                   // 只有当内容纯行内时才退回到 parseInline
+                   if (needBlockParse) {
+                       console.log('[renderMarkdown] 使用 marked.parse() 进行块级解析');
+                       var parsed = marked.parse(decoded);
+                       if (typeof parsed === 'string' && parsed.length > 0) {
+                           console.log('[renderMarkdown] parse结果:', parsed.substring(0, 200));
+                           var sanitized = sanitizeHtml(parsed);
                            console.log('[renderMarkdown] sanitize后:', sanitized ? sanitized.substring(0, 200) : '(空)');
                            return sanitized;
                        }
                    }
-                   var parsed = marked.parse(decoded);
-                   console.log('[renderMarkdown] parse结果:', parsed ? parsed.substring(0, 200) : '(空)');
-                   if (typeof parsed === 'string') {
-                       var sanitized2 = sanitizeHtml(parsed);
-                       console.log('[renderMarkdown] sanitize后:', sanitized2 ? sanitized2.substring(0, 200) : '(空)');
+                   // fallback: 先尝试 parseInline
+                   if (typeof marked.parseInline === 'function') {
+                       var inline = marked.parseInline(decoded);
+                       if (typeof inline === 'string' && inline.length > 0) {
+                           console.log('[renderMarkdown] parseInline结果:', inline.substring(0, 200));
+                           var sanitized3 = sanitizeHtml(inline);
+                           return sanitized3;
+                       }
+                   }
+                   // 最后兜底: parse
+                   var parsed2 = marked.parse(decoded);
+                   if (typeof parsed2 === 'string') {
+                       console.log('[renderMarkdown] 兜底 parse结果:', parsed2.substring(0, 200));
+                       var sanitized2 = sanitizeHtml(parsed2);
                        return sanitized2;
                    }
                } else {
