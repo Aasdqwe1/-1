@@ -18,6 +18,7 @@ import java.net.NetworkInterface;
 import java.util.Enumeration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
@@ -632,7 +633,7 @@ public class McpServer {
                         final AtomicReference<Long> lastActivityAt = new AtomicReference<>(System.currentTimeMillis());
                         final AtomicReference<Boolean> stopHeartbeat = new AtomicReference<>(false);
                         // 用于标记是否正在接收工具调用 JSON 流：当检测到工具调用时设为 true，接收完成后设为 false
-                        final AtomicReference<Boolean> inToolCallStream = new AtomicReference<>(false);
+                        final AtomicBoolean inToolCallStream = new AtomicBoolean(false);
 
                         Thread heartbeat = new Thread(new Runnable() {
                             @Override
