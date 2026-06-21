@@ -14,7 +14,12 @@ import java.io.OutputStreamWriter;
  */
 public class FileWriteTool implements Tool {
 
-    // 允许写入的外部存储路径白名单
+    // 允许的外部存储目录名称
+    private static final String[] ALLOWED_DIRS = {
+            "Download", "Documents", "Pictures", "DCIM", "Movies"
+    };
+
+    // 允许写入的外部存储路径白名单（完整路径）
     private static final String[] ALLOWED_EXTERNAL_PREFIXES = {
             "/storage/emulated/0/Download/",
             "/storage/emulated/0/Documents/",
@@ -26,11 +31,6 @@ public class FileWriteTool implements Tool {
             "/sdcard/Pictures/",
             "/sdcard/DCIM/",
             "/sdcard/Movies/",
-            "/Download/",
-            "/Documents/",
-            "/Pictures/",
-            "/DCIM/",
-            "/Movies/",
     };
 
     @Override
@@ -100,20 +100,11 @@ public class FileWriteTool implements Tool {
                 throw new Exception("不允许的外部存储路径，仅支持 Download/Documents/Pictures/DCIM/Movies 等公共目录");
             }
             
-            // 解析外部存储完整路径
-            if (path.startsWith("/storage/")) {
-                file = new File(path);
-            } else if (path.startsWith("/Download/") || path.startsWith("/Documents/") 
-                    || path.startsWith("/Pictures/") || path.startsWith("/DCIM/") 
-                    || path.startsWith("/Movies/")) {
-                // 快捷路径，转换为完整路径
-                file = new File("/storage/emulated/0", path);
-            } else {
-                throw new Exception("无法识别的外部存储路径格式");
-            }
+            // 已验证为允许的外部存储路径
+            file = new File(path);
         } else if (path.startsWith("/")) {
             // 其他绝对路径被拒绝
-            throw new Exception("不允许的路径格式，仅支持相对路径或 /storage/emulated/0 下的公共目录");
+            throw new Exception("不允许的路径格式，仅支持相对路径或 /storage/emulated/0/Download 等完整外部存储路径");
         } else {
             // 相对路径，使用内部存储
             file = new File(getBaseDir(), path);
@@ -140,13 +131,8 @@ public class FileWriteTool implements Tool {
      * 检查是否是外部存储路径
      */
     private boolean isExternalStoragePath(String path) {
-        return path.startsWith("/storage/emulated/0/") 
-                || path.startsWith("/sdcard/")
-                || path.startsWith("/Download/")
-                || path.startsWith("/Documents/")
-                || path.startsWith("/Pictures/")
-                || path.startsWith("/DCIM/")
-                || path.startsWith("/Movies/");
+        // 只允许 /storage/emulated/0/... 或 /sdcard/... 路径
+        return path.startsWith("/storage/emulated/0/") || path.startsWith("/sdcard/");
     }
     
     /**

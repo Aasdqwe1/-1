@@ -19,11 +19,16 @@ import java.util.Enumeration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 
 /**
  * MCP 服务端 - 基于HTTP的JSON-RPC 2.0服务 + 静态网页服务
  */
 public class McpServer {
+
+    // P0 修复：预编译控制字符过滤正则表达式以提升性能
+    private static final Pattern CONTROL_CHARS_PATTERN = 
+        Pattern.compile("[\\x00\\x01-\\x08\\x0B-\\x0C\\x0E-\\x1F\\x7F-\\x9F]");
 
     private int port;
     private ServerSocket serverSocket;
@@ -259,8 +264,8 @@ public class McpServer {
             if (requestBody == null) {
                 return "";
             }
-            // 在单次正则表达式中移除所有 NUL 字节和控制字符（除了制表符、换行符、回车符）
-            return requestBody.replaceAll("[\\x00\\x01-\\x08\\x0B-\\x0C\\x0E-\\x1F\\x7F-\\x9F]", "");
+            // 使用预编译的正则表达式移除所有控制字符
+            return CONTROL_CHARS_PATTERN.matcher(requestBody).replaceAll("");
         }
 
         /**
@@ -276,6 +281,8 @@ public class McpServer {
 
         private void handlePostRequest(String path, String requestBody, OutputStream out) throws IOException {
             // P0 修复：清理空字节和控制字符
+            // 注意：这可能会将某些请求转换为空 JSON 对象（例如 "{\x00}" 变成 "{}"）
+            // 这是一种防御性的设计，可以防止含有控制字符的恶意 JSON 被处理
             requestBody = sanitizeRequestBody(requestBody);
             
             // P3 修复：检测空请求
@@ -288,7 +295,7 @@ public class McpServer {
             }
             
             if ("{}".equals(trimmedBody)) {
-                // 空 JSON 对象，无法处理，返回 400 Bad Request
+                // 空 JSON 对象（可能由删除控制字符后产生），无法处理，返回 400 Bad Request
                 log("收到空 JSON 对象请求 {}，无法处理");
                 sendErrorResponse(out, 400, "Empty request object");
                 return;
