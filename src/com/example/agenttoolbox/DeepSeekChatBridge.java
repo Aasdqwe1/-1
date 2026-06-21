@@ -364,6 +364,7 @@ public class DeepSeekChatBridge {
             "    if (finished) return;\n" +
             "    finished = true;\n" +
             "    Android.log('[DEBUG][' + __rid + '] 监听结束, 捕获回复长度=' + (reply ? reply.length : 0));\n" +
+            "    Android.log('[DEBUG][' + __rid + '] 完整回复: ' + (reply || '(空)'));\n" +
             "    if (window[__prefix + 'poll']) clearInterval(window[__prefix + 'poll']);\n" +
             "    if (window[__prefix + 'obs']) { try { window[__prefix + 'obs'].disconnect(); } catch(_e) {} }\n" +
             "    Android.onDeepSeekReply(__rid, reply);\n" +
@@ -462,6 +463,28 @@ public class DeepSeekChatBridge {
             "      // 内容有变化，重置冷却计时器\n" +
             "      completionReady = false;\n" +
             "      completionStartTime = 0;\n" +
+            "    }\n" +
+            "\n" +
+            "    // JSON 完整性检查（针对工具调用）\n" +
+            "    var isJsonRpcCall = reply.indexOf('\"jsonrpc\"') !== -1 && reply.indexOf('\"tools/call\"') !== -1;\n" +
+            "    if (isJsonRpcCall) {\n" +
+            "      var trimmed = reply.trim();\n" +
+            "      var isCompleteJson = trimmed.startsWith('{') && trimmed.endsWith('}');\n" +
+            "      if (!isCompleteJson) {\n" +
+            "        // JSON 不完整，重置冷却，继续等待\n" +
+            "        if (completionReady) {\n" +
+            "          completionReady = false;\n" +
+            "          completionStartTime = 0;\n" +
+            "          Android.log('[DEBUG][' + __rid + '] JSON不完整，重置冷却');\n" +
+            "        }\n" +
+            "        // 跳过完成判定，继续等待\n" +
+            "        if (pollCount > 240) {\n" +
+            "          finish(reply || '');\n" +
+            "        }\n" +
+            "        return;\n" +
+            "      } else {\n" +
+            "        Android.log('[DEBUG][' + __rid + '] 检测到完整JSON-RPC调用');\n" +
+            "      }\n" +
             "    }\n" +
             "\n" +
             "    // 完成判定：采用冷却机制，内容稳定后再等 2.5 秒\n" +

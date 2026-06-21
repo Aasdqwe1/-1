@@ -313,6 +313,115 @@ public class McpServer {
          * 处理 DeepSeek 聊天请求
          * 注意: throws JSONException 已添加，内部 try-catch 会捕获所有异常
          */
+        /**
+         * 从回复文本中提取 JSON-RPC 工具调用
+         * @param reply AI 回复文本
+         * @return 提取到的 JSON-RPC 字符串，如果没有则返回 null
+         */
+        private String extractJsonRpcFromReply(String reply) {
+            if (reply == null || reply.isEmpty()) return null;
+            
+            // 查找 jsonrpc 标记
+            int jsonRpcIdx = reply.indexOf("\"jsonrpc\"");
+            if (jsonRpcIdx == -1) return null;
+            
+            // 向前找到最近的 {
+            int startIdx = -1;
+            for (int i = jsonRpcIdx; i >= 0; i--) {
+                if (reply.charAt(i) == '{') {
+                    startIdx = i;
+                    break;
+                }
+            }
+            if (startIdx == -1) return null;
+            
+            // 向后找到匹配的 }
+            int depth = 0;
+            int endIdx = -1;
+            boolean inString = false;
+            boolean escape = false;
+            
+            for (int i = startIdx; i < reply.length(); i++) {
+                char c = reply.charAt(i);
+                
+                if (escape) {
+                    escape = false;
+                    continue;
+                }
+                
+                if (c == '\\\\') {
+                    escape = true;
+                    continue;
+                }
+                
+                if (c == '"') {
+                    inString = !inString;
+                    continue;
+                }
+                
+                if (inString) continue;
+                
+                if (c == '{') {
+                    depth++;
+                } else if (c == '}') {
+                    depth--;
+                    if (depth == 0) {
+                        endIdx = i;
+                        break;
+                    }
+                }
+            }
+            
+            if (endIdx == -1) return null;
+            
+            return reply.substring(startIdx, endIdx + 1);
+        }
+        
+        /**
+         * 执行 JSON-RPC 工具调用并返回结果字符串
+         * @param jsonRpcStr JSON-RPC 字符串
+         * @return 工具执行结果字符串
+         */
+        private String executeToolCall(String jsonRpcStr) {
+            try {
+                JSONObject request = new JSONObject(jsonRpcStr);
+                String method = request.optString("method", "");
+                
+                if (!"tools/call".equals(method)) {
+                    return null;
+                }
+                
+                JSONObject params = request.optJSONObject("params");
+                if (params == null) {
+                    return "错误: 缺少 params";
+                }
+                
+                String toolName = params.optString("name", "");
+                JSONObject arguments = params.optJSONObject("arguments");
+                if (arguments == null) {
+                    arguments = new JSONObject();
+                }
+                
+                log("执行工具调用: " + toolName);
+                JSONObject result = ToolManager.getInstance().callTool(toolName, arguments);
+                log("工具执行结果: " + result.toString());
+                
+                // 构造 MCP 格式的结果文本
+                JSONArray content = result.optJSONArray("content");
+                if (content != null && content.length() > 0) {
+                    JSONObject first = content.optJSONObject(0);
+                    if (first != null) {
+                        return first.optString("text", "");
+                    }
+                }
+                
+                return result.toString();
+            } catch (Exception e) {
+                log("工具调用执行失败: " + e.getMessage());
+                return "工具执行失败: " + e.getMessage();
+            }
+        }
+        
         private void handleChatRequest(String path, String requestBody, final OutputStream out) 
 		throws IOException {
             String responseBody;
@@ -516,7 +625,7 @@ public class McpServer {
                                             j.put("attempt", curAttempt);
                                             writeEventChunk(out, "done", j.toString());
                                             log("流式回复完成(" + curAttempt + "): " +
-                                                (reply == null ? "空" : reply.length() + " 字节, 内容预览: " + reply.substring(0, Math.min(80, reply.length()))));
+                                                (reply == null ? "空" : reply.length() + " 字节\n完整回复:\n" + reply));
                                         } catch (Exception e) { /* ignore */ }
                                         attemptLatch.countDown();
                                     }
@@ -653,7 +762,7 @@ public class McpServer {
                 }
             }
 
-            log("聊天响应: " + (responseBody.length() > 100 ? responseBody.substring(0, 100) + "..." : responseBody));
+            log("聊天响应:\n" + responseBody);
 
             String response = "HTTP/1.1 200 OK\r\n" +
                 "Content-Type: application/json\r\n" +
