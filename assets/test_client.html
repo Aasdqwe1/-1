@@ -30,12 +30,14 @@
                 
                // 递归清理危险元素和属性
                function cleanNode(node) {
-                   if (node.nodeType === 3) return; // 文本节点保留
-                   if (node.nodeType === 8) { node.remove(); return; } // 注释节点移除
+                   const nodeType = node.nodeType;
+                   if (nodeType === 3) return; // Text node: keep it
+                   if (nodeType === 8) { node.remove(); return; } // Comment node: remove it
+                   if (nodeType !== 1) return; // Element node check (nodeType === 1 for Element)
                     
                    const tagName = node.tagName;
                    if (!allowedTags.has(tagName)) {
-                       // 不在允许列表中，用其子节点替换此节点
+                       // Not in allowlist, replace node with its children
                        while (node.firstChild) {
                            node.parentNode.insertBefore(node.firstChild, node);
                        }

@@ -262,7 +262,8 @@ public class MainActivity extends Activity {
             logDeque.removeLast();
         }
         
-        // 构建显示文本
+        // 构建显示文本 - 每次都重建是可接受的，因为日志条数有限
+        // 对于MAX_LOGS=1000，整个日志文本也只有~100KB，性能影响最小
         StringBuilder displayText = new StringBuilder();
         for (String log : logDeque) {
             displayText.append(log).append("\n");
