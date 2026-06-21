@@ -30,6 +30,10 @@ public class McpServer {
     private static final Pattern CONTROL_CHARS_PATTERN = 
         Pattern.compile("[\\x00\\x01-\\x08\\x0B-\\x0C\\x0E-\\x1F\\x7F-\\x9F]");
 
+    // 心跳检测超时时间（毫秒），用于长时间运行的工具调用
+    // 从 8 秒调整为 30 秒以支持长时间工具执行（如 HTTP 请求、文件操作、命令执行等）
+    private static final long HEARTBEAT_TIMEOUT_MS = 30000L;
+
     private int port;
     private ServerSocket serverSocket;
     private boolean running = false;
@@ -615,11 +619,11 @@ public class McpServer {
                                 try {
                                     int seq = 0;
                                     while (!stopHeartbeat.get()) {
-                                        Thread.sleep(30000);
+                                        Thread.sleep(HEARTBEAT_TIMEOUT_MS);
                                         if (stopHeartbeat.get()) return;
                                         long now = System.currentTimeMillis();
                                         long last = lastActivityAt.get();
-                                        if (now - last >= 30000) {
+                                        if (now - last >= HEARTBEAT_TIMEOUT_MS) {
                                             seq++;
                                             JSONObject j = new JSONObject();
                                             j.put("message", "模型处理中...");
