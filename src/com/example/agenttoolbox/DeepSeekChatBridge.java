@@ -375,7 +375,7 @@ public class DeepSeekChatBridge {
             "    pollCount++;\n" +
             "    var list = getAssistantMessages();\n" +
             "    var gen = isGenerating();\n" +
-            "    \n" +
+            "\n" +
             "    // 没有任何AI消息，继续等待\n" +
             "    if (list.length === 0) {\n" +
             "      if (pollCount > 240) {\n" +
@@ -384,14 +384,14 @@ public class DeepSeekChatBridge {
             "      }\n" +
             "      return;\n" +
             "    }\n" +
-            "    \n" +
+            "\n" +
             "    // 检查是否有新消息（数量增加 或 最后一条内容变化）\n" +
             "    var lastEl = list[list.length - 1];\n" +
             "    var lastContent = getAssistantReply(lastEl) || '';\n" +
-            "    var hasNewMessage = detectedNewMessage || \n" +
-            "                       (list.length > initialMsgCount) || \n" +
+            "    var hasNewMessage = detectedNewMessage ||\n" +
+            "                       (list.length > initialMsgCount) ||\n" +
             "                       (list.length === initialMsgCount && lastContent !== initialLastContent && lastContent.length > 0);\n" +
-            "    \n" +
+            "\n" +
             "    // 没有新消息，继续等待\n" +
             "    if (!hasNewMessage) {\n" +
             "      if (pollCount > 240) {\n" +
@@ -400,45 +400,106 @@ public class DeepSeekChatBridge {
             "      }\n" +
             "      return;\n" +
             "    }\n" +
-            "    \n" +
+            "\n" +
             "    // 检测到新消息，设置标志\n" +
             "    if (!detectedNewMessage) {\n" +
             "      detectedNewMessage = true;\n" +
             "      Android.log('[DEBUG][' + __rid + '] 检测到新消息，开始跟踪');\n" +
             "    }\n" +
-            "    \n" +
+            "\n" +
             "    // 更新基准\n" +
             "    if (list.length > initialMsgCount) {\n" +
             "      initialMsgCount = list.length;\n" +
             "    }\n" +
             "    initialLastContent = lastContent;\n" +
-            "    \n" +
+            "\n" +
             "    // 直接取最后一条AI消息，始终跟踪最新内容\n" +
             "    var latestEl = list[list.length - 1];\n" +
             "    var reply = getAssistantReply(latestEl);\n" +
-            "    \n" +
+            "\n" +
             "    // 每10次轮询输出一次调试信息\n" +
             "    if (pollCount % 10 === 1 || pollCount <= 3) {\n" +
             "      var debugPreview = reply ? reply.substring(0, 80) : '';\n" +
             "      var sendReady = isSendButtonReady();\n" +
             "      var complete = isLatestReplyComplete(latestEl);\n" +
-            "      Android.log('[DEBUG][' + __rid + '] 轮询#' + pollCount + \n" +
-            "        ' 消息数=' + list.length + '/' + initialMsgCount + \n" +
-            "        ' 生成中=' + gen + \n" +
-            "        ' 发送就绪=' + sendReady + \n" +
-            "        ' 操作栏=' + complete + \n" +
-            "        ' 回复长度=' + (reply ? reply.length : 0) + \n" +
-            "        ' 稳定次数=' + sameLenStable + \n" +
+            "      Android.log('[DEBUG][' + __rid + '] 轮询#' + pollCount +\n" +
+            "        ' 消息数=' + list.length + '/' + initialMsgCount +\n" +
+            "        ' 生成中=' + gen +\n" +
+            "        ' 发送就绪=' + sendReady +\n" +
+            "        ' 操作栏=' + complete +\n" +
+            "        ' 回复长度=' + (reply ? reply.length : 0) +\n" +
+            "        ' 稳定次数=' + sameLenStable +\n" +
             "        ' 预览=\"' + debugPreview + '\"');\n" +
             "    }\n" +
-            "    \n" +
+            "\n" +
             "    // 状态心跳\n" +
             "    if (pollCount - lastStatusAt >= 15) {\n" +
             "      lastStatusAt = pollCount;\n" +
             "      var statusMsg = (reply && reply.length > 0 ? '正在接收回复' : (gen ? '模型正在生成中' : '等待模型响应'));\n" +
             "      try { Android.onDeepSeekChunk(__rid, '[STATUS] ' + statusMsg); } catch(_e) {}\n" +
             "    }\n" +
-            "    \n" +
+            "\n" +
+            "    // ========== 工具调用优先检测 ==========\n" +
+            "    var isToolCall = (typeof reply === 'string') &&\n" +
+            "                     reply.indexOf('\"jsonrpc\"') !== -1 &&\n" +
+            "                     reply.indexOf('\"tools/call\"') !== -1;\n" +
+            "\n" +
+            "    if (isToolCall) {\n" +
+            "      // 工具调用场景：必须等待 JSON 完整\n" +
+            "      var jsonStr = null;\n" +
+            "      var firstBrace = reply.indexOf('{');\n" +
+            "      if (firstBrace !== -1) {\n" +
+            "        var lastBrace = reply.lastIndexOf('}');\n" +
+            "        if (lastBrace !== -1 && lastBrace > firstBrace) {\n" +
+            "          jsonStr = reply.substring(firstBrace, lastBrace + 1);\n" +
+            "        } else {\n" +
+            "          // 若未找到右括号，从第一个 { 截取到末尾\n" +
+            "          jsonStr = reply.substring(firstBrace);\n" +
+            "        }\n" +
+            "      }\n" +
+            "      var jsonComplete = false;\n" +
+            "      if (jsonStr) {\n" +
+            "        // 尝试解析；最多自动补 3 个右括号容错\n" +
+            "        var testStr = jsonStr;\n" +
+            "        for (var t = 0; t < 4; t++) {\n" +
+            "          try {\n" +
+            "            JSON.parse(testStr);\n" +
+            "            jsonStr = testStr;\n" +
+            "            jsonComplete = true;\n" +
+            "            break;\n" +
+            "          } catch(e) {\n" +
+            "            testStr = testStr + '}';\n" +
+            "          }\n" +
+            "        }\n" +
+            "      }\n" +
+            "      if (jsonComplete) {\n" +
+            "        // 验证通过：将提取的完整 JSON 作为最终回复\n" +
+            "        reply = jsonStr;\n" +
+            "        Android.log('[DEBUG][' + __rid + '] 成功提取并验证JSON-RPC调用，长度=' + jsonStr.length);\n" +
+            "        // 立即完成，不再等待稳定判定\n" +
+            "        finish(reply);\n" +
+            "        return;\n" +
+            "      } else {\n" +
+            "        // JSON 不完整：重置冷却，继续等待\n" +
+            "        if (completionReady) {\n" +
+            "          completionReady = false;\n" +
+            "          completionStartTime = 0;\n" +
+            "        }\n" +
+            "        sameLenStable = 0;\n" +
+            "        Android.log('[DEBUG][' + __rid + '] JSON不完整，继续等待（已检测到jsonrpc/tools/call）');\n" +
+            "        // 超时：报错；不调用 finish，避免回传残缺文本导致工具调用失败\n" +
+            "        if (pollCount > 240) {\n" +
+            "          Android.onDeepSeekError(__rid, '超时：工具调用JSON不完整');\n" +
+            "          if (window[__prefix + 'poll']) clearInterval(window[__prefix + 'poll']);\n" +
+            "          if (window[__prefix + 'obs']) { try { window[__prefix + 'obs'].disconnect(); } catch(_e) {} }\n" +
+            "          finished = true;\n" +
+            "        }\n" +
+            "        return; // 跳过后续稳定判定\n" +
+            "      }\n" +
+            "    }\n" +
+            "\n" +
+            "    // ========== 以下为普通回复（非工具调用）的完成判定 ==========\n" +
+            "\n" +
             "    // 内容太短，继续等待\n" +
             "    if (!reply || reply.length < 2) {\n" +
             "      if (pollCount > 240) {\n" +
@@ -465,80 +526,31 @@ public class DeepSeekChatBridge {
             "      completionStartTime = 0;\n" +
             "    }\n" +
             "\n" +
-            "    // 检测是否为工具调用 JSON-RPC\n" +
-            "    var isToolCall = reply.indexOf('\"jsonrpc\"') !== -1 && reply.indexOf('\"tools/call\"') !== -1;\n" +
-            "\n" +
-            "    if (isToolCall) {\n" +
-            "      // 尝试提取并验证 JSON\n" +
-            "      var jsonStr = null;\n" +
-            "      var firstBrace = reply.indexOf('{');\n" +
-            "      var lastBrace = reply.lastIndexOf('}');\n" +
-            "      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {\n" +
-            "        jsonStr = reply.substring(firstBrace, lastBrace + 1);\n" +
-            "      }\n" +
-            "      var isComplete = false;\n" +
-            "      if (jsonStr) {\n" +
-            "        try {\n" +
-            "          JSON.parse(jsonStr);\n" +
-            "          isComplete = true;\n" +
-            "          // 把提取出的完整 JSON 赋给 reply，确保传递的是纯 JSON\n" +
-            "          reply = jsonStr;\n" +
-            "        } catch(e) {\n" +
-            "          isComplete = false;\n" +
-            "        }\n" +
-            "      }\n" +
-            "      if (!isComplete) {\n" +
-            "        // JSON 不完整，重置冷却并继续等待\n" +
-            "        if (completionReady) {\n" +
-            "          completionReady = false;\n" +
-            "          completionStartTime = 0;\n" +
-            "          Android.log('[DEBUG][' + __rid + '] JSON不完整，重置冷却');\n" +
-            "        }\n" +
-            "        // 超时则报错，不调用 finish\n" +
-            "        if (pollCount > 240) {\n" +
-            "          Android.onDeepSeekError(__rid, '超时：工具调用JSON不完整');\n" +
-            "          if (window[__prefix + 'poll']) clearInterval(window[__prefix + 'poll']);\n" +
-            "          if (window[__prefix + 'obs']) { try { window[__prefix + 'obs'].disconnect(); } catch(_e) {} }\n" +
-            "          finished = true;\n" +
-            "        }\n" +
-            "        return; // 跳过后续完成判定\n" +
-            "      } else {\n" +
-            "        Android.log('[DEBUG][' + __rid + '] 成功提取并验证JSON-RPC调用');\n" +
-            "      }\n" +
-            "    }\n" +
-            "    // 如果是普通回复（非工具调用），继续走原有的稳定判定\n" +
-            "\n" +
             "    // 完成判定：采用冷却机制，内容稳定后再等 2.5 秒\n" +
             "    var MIN_LENGTH = 5;\n" +
             "    var STABLE_WAIT_MS = 2500;\n" +
-            "    \n" +
-            "    // 条件A：内容稳定 6 秒（兜底，防止超长回复一直等）\n" +
             "    var stableLong = sameLenStable >= 12 && reply.length > MIN_LENGTH;\n" +
-            "    // 条件B：内容稳定 1.5 秒且长度大于 10（短回复快速完成）\n" +
             "    var stableShort = sameLenStable >= 3 && reply.length > 10;\n" +
-            "    \n" +
-            "    // 冷却机制：内容稳定后再等 2.5 秒\n" +
+            "\n" +
             "    if (stableLong || stableShort) {\n" +
             "      if (!completionReady) {\n" +
             "        completionReady = true;\n" +
             "        completionStartTime = Date.now();\n" +
-            "        Android.log('[DEBUG][' + __rid + '] 内容已稳定，开始冷却计时');\n" +
+            "        Android.log('[DEBUG][' + __rid + '] 普通回复内容已稳定，开始冷却计时');\n" +
             "      } else if (Date.now() - completionStartTime > STABLE_WAIT_MS) {\n" +
-            "        // 冷却结束，确认完成\n" +
-            "        Android.log('[DEBUG][' + __rid + '] 冷却结束，确认完成');\n" +
+            "        Android.log('[DEBUG][' + __rid + '] 冷却结束，确认普通回复完成');\n" +
             "        finish(reply);\n" +
             "        return;\n" +
             "      }\n" +
             "    } else {\n" +
-            "      // 内容还在变化，重置冷却标志\n" +
             "      if (completionReady) {\n" +
             "        completionReady = false;\n" +
             "        completionStartTime = 0;\n" +
-            "        Android.log('[DEBUG][' + __rid + '] 内容继续增长，重置冷却');\n" +
+            "        Android.log('[DEBUG][' + __rid + '] 普通回复内容继续增长，重置冷却');\n" +
             "      }\n" +
             "    }\n" +
             "\n" +
-            "    // 最长 90 秒超时：有部分内容就返回已有内容\n" +
+            "    // 超时兜底（普通回复）：有部分内容就返回\n" +
             "    if (pollCount > 240) {\n" +
             "      finish(reply || '');\n" +
             "    }\n" +
