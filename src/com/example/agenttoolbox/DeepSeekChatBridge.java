@@ -272,8 +272,56 @@ public class DeepSeekChatBridge {
             "\n" +
             "  function getAssistantReply(el) {\n" +
             "    if (!el) return null;\n" +
+            "    // 尝试获取HTML内容以保持Markdown格式化\n" +
+            "    var html = (el.innerHTML || '').trim();\n" +
+            "    if (html && html.length > 0) {\n" +
+            "      // 转换HTML为Markdown格式，保持文档结构\n" +
+            "      var md = htmlToMarkdown(html);\n" +
+            "      if (md && md.length > 0) {\n" +
+            "        return md;\n" +
+            "      }\n" +
+            "    }\n" +
+            "    // 备用方案：如果HTML转换失败，使用plaintext\n" +
             "    var txt = (el.innerText || el.textContent || '').trim();\n" +
             "    return txt || null;\n" +
+            "  }\n" +
+            "\n" +
+            "  // HTML到Markdown的转换函数\n" +
+            "  function htmlToMarkdown(html) {\n" +
+            "    if (!html) return '';\n" +
+            "    var md = html;\n" +
+            "    // 保留段落之间的空行\n" +
+            "    md = md.replace(/<\\/p>/gi, '\\n\\n');\n" +
+            "    md = md.replace(/<p[^>]*>/gi, '');\n" +
+            "    // 转换div为段落\n" +
+            "    md = md.replace(/<\\/div>/gi, '\\n');\n" +
+            "    // 转换br为换行符\n" +
+            "    md = md.replace(/<br\\s*\\/?>/gi, '\\n');\n" +
+            "    // 保持换行符用于列表等结构\n" +
+            "    md = md.replace(/<li[^>]*>(.*?)<\\/li>/gi, '- $1\\n');\n" +
+            "    // 转换加粗\n" +
+            "    md = md.replace(/<strong[^>]*>(.*?)<\\/strong>/gi, '**$1**');\n" +
+            "    md = md.replace(/<b[^>]*>(.*?)<\\/b>/gi, '**$1**');\n" +
+            "    // 转换斜体\n" +
+            "    md = md.replace(/<em[^>]*>(.*?)<\\/em>/gi, '*$1*');\n" +
+            "    md = md.replace(/<i[^>]*>(.*?)<\\/i>/gi, '*$1*');\n" +
+            "    // 转换标题\n" +
+            "    md = md.replace(/<h1[^>]*>(.*?)<\\/h1>/gi, '# $1\\n');\n" +
+            "    md = md.replace(/<h2[^>]*>(.*?)<\\/h2>/gi, '## $1\\n');\n" +
+            "    md = md.replace(/<h3[^>]*>(.*?)<\\/h3>/gi, '### $1\\n');\n" +
+            "    md = md.replace(/<h4[^>]*>(.*?)<\\/h4>/gi, '#### $1\\n');\n" +
+            "    // 转换链接\n" +
+            "    md = md.replace(/<a\\s+href=[\"']([^\"']*)[\"'][^>]*>(.*?)<\\/a>/gi, '[$2]($1)');\n" +
+            "    // 转换代码块\n" +
+            "    md = md.replace(/<code[^>]*>(.*?)<\\/code>/gi, '`$1`');\n" +
+            "    md = md.replace(/<pre[^>]*><code[^>]*>(.*?)<\\/code><\\/pre>/gi, '```\\n$1\\n```');\n" +
+            "    // 移除其他HTML标签\n" +
+            "    md = md.replace(/<[^>]+>/gi, '');\n" +
+            "    // 清理多余的空行（保留最多2个连续空行）\n" +
+            "    md = md.replace(/\\n{3,}/g, '\\n\\n');\n" +
+            "    // 删除前后空白\n" +
+            "    md = md.trim();\n" +
+            "    return md || null;\n" +
             "  }\n" +
             "\n" +
             "  // 备用全页扫描：依次尝试多个选择器，返回最后一条非空内容\n" +
