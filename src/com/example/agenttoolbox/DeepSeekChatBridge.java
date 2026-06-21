@@ -407,37 +407,47 @@ public class DeepSeekChatBridge {
             "\n" +
             "  // ===== C. 是否仍在生成 =====\n" +
             "  function isGenerating() {\n" +
+            "    // 第1步：检查 typing/loading/thinking 指示器\n" +
             "    var typing = document.querySelector('[class*=\"typing\"]') ||\n" +
             "                  document.querySelector('[class*=\"loading\"]') ||\n" +
             "                  document.querySelector('[class*=\"thinking\"]') ||\n" +
             "                  document.querySelector('[class*=\"Thinking\"]') ||\n" +
             "                  document.querySelector('[aria-busy=\"true\"]');\n" +
             "    if (typing) return true;\n" +
-            "    var circleBtns = document.querySelectorAll('div[role=\"button\"][class*=\"ds-button--circle\"]');\n" +
-            "    for (var j = 0; j < circleBtns.length; j++) {\n" +
-            "      var cls = circleBtns[j].getAttribute('class') || '';\n" +
-            "      if (cls.indexOf('ds-button--primary') === -1) return true;\n" +
+            "    \n" +
+            "    // 第2步：检查所有圆形primary按钮（停止按钮是圆形的）\n" +
+            "    // 修复：之前只检查第一个primary按钮，可能找错了；现在专门找圆形的primary按钮\n" +
+            "    var circlePrimaryBtns = document.querySelectorAll('div[role=\"button\"][class*=\"ds-button--circle\"][class*=\"ds-button--primary\"]');\n" +
+            "    if (circlePrimaryBtns && circlePrimaryBtns.length > 0) {\n" +
+            "      // 找到了圆形的primary按钮 = 停止按钮 = 正在生成\n" +
+            "      return true;\n" +
             "    }\n" +
-            "    var sendBtn = document.querySelector('div[role=\"button\"][class*=\"ds-button--primary\"]');\n" +
-            "    if (!sendBtn) return true;\n" +
-            "    var svg = sendBtn.querySelector('svg');\n" +
-            "    if (svg) {\n" +
-            "      // 修复：使用 querySelector('path') + getAttribute('d') 获取SVG路径数据\n" +
-            "      // svg.innerHTML 无法正确获取SVG内部的path元素内容\n" +
-            "      var pathEl = svg.querySelector('path');\n" +
-            "      if (pathEl) {\n" +
-            "        var pathD = pathEl.getAttribute('d') || '';\n" +
-            "        // 停止图标特征：方块形状（M2 4.88 开头的矩形路径）\n" +
-            "        // 发送图标是箭头形状，路径特征不同\n" +
-            "        if (pathD.indexOf('M2 4.88') !== -1 ||\n" +
-            "            pathD.indexOf('M 2 4.88') !== -1 ||\n" +
-            "            pathD.indexOf('4.88 2') !== -1 ||\n" +
-            "            pathD.indexOf('stop') !== -1 ||\n" +
-            "            pathD.indexOf('rect') !== -1) return true;\n" +
+            "    \n" +
+            "    // 第3步：检查所有primary按钮的SVG（备用方案）\n" +
+            "    // 有些版本可能按钮不是圆形的，或者类名有变化\n" +
+            "    var allPrimaryBtns = document.querySelectorAll('div[role=\"button\"][class*=\"ds-button--primary\"]');\n" +
+            "    for (var k = 0; k < allPrimaryBtns.length; k++) {\n" +
+            "      var btn = allPrimaryBtns[k];\n" +
+            "      var svg = btn.querySelector('svg');\n" +
+            "      if (svg) {\n" +
+            "        var pathEl = svg.querySelector('path');\n" +
+            "        if (pathEl) {\n" +
+            "          var pathD = pathEl.getAttribute('d') || '';\n" +
+            "          // 停止图标特征：方块形状（M2 4.88 开头的矩形路径）\n" +
+            "          if (pathD.indexOf('M2 4.88') !== -1 ||\n" +
+            "              pathD.indexOf('M 2 4.88') !== -1 ||\n" +
+            "              pathD.indexOf('4.88 2') !== -1 ||\n" +
+            "              pathD.indexOf('stop') !== -1 ||\n" +
+            "              pathD.indexOf('rect') !== -1) {\n" +
+            "            return true;\n" +
+            "          }\n" +
+            "        }\n" +
+            "        // 备用：检查SVG内部是否有rect元素\n" +
+            "        if (svg.querySelector('rect')) return true;\n" +
             "      }\n" +
-            "      // 备用：检查SVG内部是否有rect元素（有些版本可能用rect而不是path）\n" +
-            "      if (svg.querySelector('rect')) return true;\n" +
             "    }\n" +
+            "    \n" +
+            "    // 第4步：检查最后一条消息的文本\n" +
             "    var last = document.querySelector('.ds-assistant-message-main-content:last-child');\n" +
             "    if (last) {\n" +
             "      var lt = (last.innerText || '').trim();\n" +
@@ -445,30 +455,35 @@ public class DeepSeekChatBridge {
             "        if (/…|\\.{2,}|正在|思考|生成|处理/.test(lt)) return true;\n" +
             "      }\n" +
             "    }\n" +
+            "    \n" +
             "    return false;\n" +
             "  }\n" +
             "\n" +
             "  // 检测发送按钮是否处于可发送状态（没有暂停/停止图标）\n" +
             "  function isSendButtonReady() {\n" +
-            "    var sendBtn = document.querySelector('div[role=\"button\"][class*=\"ds-button--primary\"]');\n" +
-            "    if (!sendBtn) return false;\n" +
-            "    var svg = sendBtn.querySelector('svg');\n" +
-            "    if (!svg) return false;\n" +
-            "    // 修复：使用 querySelector('path') + getAttribute('d') 获取SVG路径数据\n" +
-            "    var pathEl = svg.querySelector('path');\n" +
-            "    if (pathEl) {\n" +
-            "      var pathD = pathEl.getAttribute('d') || '';\n" +
-            "      // 停止图标特征：方块形状（M2 4.88 开头的矩形路径）\n" +
-            "      if (pathD.indexOf('M2 4.88') !== -1 ||\n" +
-            "          pathD.indexOf('M 2 4.88') !== -1 ||\n" +
-            "          pathD.indexOf('4.88 2') !== -1 ||\n" +
-            "          pathD.indexOf('stop') !== -1 ||\n" +
-            "          pathD.indexOf('rect') !== -1) {\n" +
-            "        return false; // 检测到停止图标，按钮未就绪\n" +
+            "    // 修复：检查所有primary按钮，只要有一个是停止按钮就返回false\n" +
+            "    var allPrimaryBtns = document.querySelectorAll('div[role=\"button\"][class*=\"ds-button--primary\"]');\n" +
+            "    if (!allPrimaryBtns || allPrimaryBtns.length === 0) return false;\n" +
+            "    for (var k = 0; k < allPrimaryBtns.length; k++) {\n" +
+            "      var btn = allPrimaryBtns[k];\n" +
+            "      var svg = btn.querySelector('svg');\n" +
+            "      if (svg) {\n" +
+            "        var pathEl = svg.querySelector('path');\n" +
+            "        if (pathEl) {\n" +
+            "          var pathD = pathEl.getAttribute('d') || '';\n" +
+            "          // 停止图标特征：方块形状（M2 4.88 开头的矩形路径）\n" +
+            "          if (pathD.indexOf('M2 4.88') !== -1 ||\n" +
+            "              pathD.indexOf('M 2 4.88') !== -1 ||\n" +
+            "              pathD.indexOf('4.88 2') !== -1 ||\n" +
+            "              pathD.indexOf('stop') !== -1 ||\n" +
+            "              pathD.indexOf('rect') !== -1) {\n" +
+            "            return false; // 检测到停止图标，按钮未就绪\n" +
+            "          }\n" +
+            "        }\n" +
+            "        // 备用：检查SVG内部是否有rect元素\n" +
+            "        if (svg.querySelector('rect')) return false;\n" +
             "      }\n" +
             "    }\n" +
-            "    // 备用：检查SVG内部是否有rect元素\n" +
-            "    if (svg.querySelector('rect')) return false;\n" +
             "    return true;\n" +
             "  }\n" +
             "\n" +
@@ -642,6 +657,13 @@ public class DeepSeekChatBridge {
             "        }\n" +
             "        sameLenStable = 0;\n" +
             "        Android.log('[DEBUG][' + __rid + '] JSON不完整，检查LLM生成状态（已检测到jsonrpc/tools/call）');\n" +
+            "        // 【调试日志】输出当前获取到的完整回复内容预览\n" +
+            "        var replyPreview = reply ? reply.substring(0, 200) : '(空)';\n" +
+            "        Android.log('[DEBUG][' + __rid + '] 工具调用-完整回复预览: ' + replyPreview);\n" +
+            "        Android.log('[DEBUG][' + __rid + '] 工具调用-完整回复长度: ' + (reply ? reply.length : 0));\n" +
+            "        // 【调试日志】输出提取的JSON内容预览\n" +
+            "        var jsonPreview = jsonStr ? jsonStr.substring(0, 200) : '(空)';\n" +
+            "        Android.log('[DEBUG][' + __rid + '] 工具调用-提取JSON预览: ' + jsonPreview);\n" +
             "        // 双重验证：UI状态检测 + 内容增长检测\n" +
             "        // 只要内容还在增长，就说明LLM还在生成，即使UI状态检测认为已停止\n" +
             "        var currentJsonLen = jsonStr ? jsonStr.length : 0;\n" +
@@ -653,6 +675,8 @@ public class DeepSeekChatBridge {
             "          jsonStableCount++;\n" +
             "        }\n" +
             "        var gen = isGenerating();\n" +
+            "        // 【调试日志】详细输出生成状态检测结果\n" +
+            "        Android.log('[DEBUG][' + __rid + '] 生成状态检测: UI=' + gen + ', 内容增长=' + contentGrowing + ', 当前长度=' + currentJsonLen + ', 上次长度=' + lastJsonLen + ', 稳定计数=' + jsonStableCount);\n" +
             "        // 真正的生成状态：UI显示生成中 OR 内容还在增长\n" +
             "        var actuallyGenerating = gen || contentGrowing;\n" +
             "        if (!actuallyGenerating) {\n" +
@@ -662,6 +686,7 @@ public class DeepSeekChatBridge {
             "            // 连续30轮（约15秒）内容没有增长，才认为真的停止了\n" +
             "            // 给LLM足够的思考时间，避免工具调用思考阶段的短暂停顿被误判为停止\n" +
             "            Android.log('[DEBUG][' + __rid + '] ERROR: LLM已停止生成且JSON内容不再增长（pollCount=' + pollCount + ', stableCount=' + jsonStableCount + '）');\n" +
+            "            Android.log('[DEBUG][' + __rid + '] ERROR-最终JSON内容: ' + (jsonStr || '(空)'));\n" +
             "            Android.onDeepSeekError(__rid, '工具调用JSON不完整（LLM已停止生成）');\n" +
             "            if (window[__prefix + 'poll']) clearInterval(window[__prefix + 'poll']);\n" +
             "            if (window[__prefix + 'obs']) { try { window[__prefix + 'obs'].disconnect(); } catch(_e) {} }\n" +
