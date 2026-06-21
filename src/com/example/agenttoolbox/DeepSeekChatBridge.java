@@ -292,6 +292,8 @@ public class DeepSeekChatBridge {
             "  var sameLenStable = 0;\n" +
             "  var detectedNewMessage = false;\n" +
             "  var finished = false;\n" +
+            "  var completionReady = false;\n" +
+            "  var completionStartTime = 0;\n" +
             "  var lastStatusAt = 0;\n" +
             "\n" +
             "  // ===== B. 检查最新一条 AI 消息是否有操作栏 =====\n" +
@@ -451,22 +453,45 @@ public class DeepSeekChatBridge {
             "      lastReplyLen = reply.length;\n" +
             "    }\n" +
             "\n" +
-            "    // 稳定检测\n" +
+            "    // 稳定检测：内容长度和内容本身都未变化\n" +
             "    if (reply.length === lastReplyLen && reply === lastSeenText) {\n" +
             "      sameLenStable++;\n" +
             "    } else {\n" +
             "      sameLenStable = 0;\n" +
             "      lastSeenText = reply;\n" +
+            "      // 内容有变化，重置冷却计时器\n" +
+            "      completionReady = false;\n" +
+            "      completionStartTime = 0;\n" +
             "    }\n" +
             "\n" +
-            "    // 完成判定：(内容稳定且达到最小长度) 或 (发送按钮就绪且内容非空)\n" +
-            "    // 注意：不再使用 complete（操作栏）作为独立条件，因为 DeepSeek 操作栏在回复开始时就渲染\n" +
-            "    var stableEnough = sameLenStable >= 12;\n" +
-            "    var hasMinimumLength = reply.length > 10;\n" +
-            "    var sendReady = isSendButtonReady();\n" +
-            "    if ((stableEnough && hasMinimumLength) || (sendReady && reply.length > 20)) {\n" +
-            "      finish(reply);\n" +
-            "      return;\n" +
+            "    // 完成判定：采用冷却机制，内容稳定后再等 2.5 秒\n" +
+            "    var MIN_LENGTH = 5;\n" +
+            "    var STABLE_WAIT_MS = 2500;\n" +
+            "    \n" +
+            "    // 条件A：内容稳定 6 秒（兜底，防止超长回复一直等）\n" +
+            "    var stableLong = sameLenStable >= 12 && reply.length > MIN_LENGTH;\n" +
+            "    // 条件B：内容稳定 1.5 秒且长度大于 10（短回复快速完成）\n" +
+            "    var stableShort = sameLenStable >= 3 && reply.length > 10;\n" +
+            "    \n" +
+            "    // 冷却机制：内容稳定后再等 2.5 秒\n" +
+            "    if (stableLong || stableShort) {\n" +
+            "      if (!completionReady) {\n" +
+            "        completionReady = true;\n" +
+            "        completionStartTime = Date.now();\n" +
+            "        Android.log('[DEBUG][' + __rid + '] 内容已稳定，开始冷却计时');\n" +
+            "      } else if (Date.now() - completionStartTime > STABLE_WAIT_MS) {\n" +
+            "        // 冷却结束，确认完成\n" +
+            "        Android.log('[DEBUG][' + __rid + '] 冷却结束，确认完成');\n" +
+            "        finish(reply);\n" +
+            "        return;\n" +
+            "      }\n" +
+            "    } else {\n" +
+            "      // 内容还在变化，重置冷却标志\n" +
+            "      if (completionReady) {\n" +
+            "        completionReady = false;\n" +
+            "        completionStartTime = 0;\n" +
+            "        Android.log('[DEBUG][' + __rid + '] 内容继续增长，重置冷却');\n" +
+            "      }\n" +
             "    }\n" +
             "\n" +
             "    // 最长 90 秒超时：有部分内容就返回已有内容\n" +
