@@ -257,8 +257,8 @@ public class DeepSeekChatBridge {
             "    var list = document.querySelectorAll('.ds-assistant-message-main-content');\n" +
             "    if (!list || list.length === 0) {\n" +
             "      list = document.querySelectorAll(\n" +
-            "        '[class*=\"assistant-message\"]', '[class*=\"prose\"]', '.whitespace-pre-wrap',\n" +
-            "        '[class*=\"markdown\"]', 'article', '[role=\"article\"]'\n" +
+            "        '[class*=\"assistant-message\"], [class*=\"prose\"], .whitespace-pre-wrap, ' +\n" +
+            "        '[class*=\"markdown\"], article, [role=\"article\"]'\n" +
             "      );\n" +
             "    }\n" +
             "    return list;\n" +

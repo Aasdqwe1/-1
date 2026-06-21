@@ -511,7 +511,7 @@ public class McpServer {
                                             j.put("attempt", curAttempt);
                                             writeEventChunk(out, "done", j.toString());
                                             log("流式回复完成(" + curAttempt + "): " +
-                                                (reply == null ? "空" : reply.length() + " 字节"));
+                                                (reply == null ? "空" : reply.length() + " 字节, 内容预览: " + reply.substring(0, Math.min(80, reply.length()))));
                                         } catch (Exception e) { /* ignore */ }
                                         attemptLatch.countDown();
                                     }
