@@ -609,20 +609,26 @@ public class DeepSeekChatBridge {
             "        finish(reply);\n" +
             "        return;\n" +
             "      } else {\n" +
-            "        // JSON 不完整：重置冷却，继续等待\n" +
+            "        // JSON 不完整：根本性修复 - 检查LLM生成状态\n" +
             "        if (completionReady) {\n" +
             "          completionReady = false;\n" +
             "          completionStartTime = 0;\n" +
             "        }\n" +
             "        sameLenStable = 0;\n" +
-            "        Android.log('[DEBUG][' + __rid + '] JSON不完整，继续等待（已检测到jsonrpc/tools/call）');\n" +
-            "        // 超时：报错；不调用 finish，避免回传残缺文本导致工具调用失败\n" +
-            "        // 超时时间从 240 (2分钟) 增加到 600 (5分钟)，支持更长的JSON生成时间\n" +
-            "        if (pollCount > 600) {\n" +
-            "          Android.onDeepSeekError(__rid, '超时：工具调用JSON不完整');\n" +
+            "        Android.log('[DEBUG][' + __rid + '] JSON不完整，检查LLM生成状态（已检测到jsonrpc/tools/call）');\n" +
+            "        // 根本性修复：仅当LLM停止生成且JSON仍不完整时才报错\n" +
+            "        // 如果LLM还在生成，就无限等待直到生成完成（不受轮询次数限制）\n" +
+            "        var gen = isGenerating();\n" +
+            "        if (!gen) {\n" +
+            "          // LLM已停止生成，但JSON仍不完整 = 真实错误\n" +
+            "          Android.log('[DEBUG][' + __rid + '] ERROR: LLM已停止生成但JSON仍不完整（pollCount=' + pollCount + '）');\n" +
+            "          Android.onDeepSeekError(__rid, '工具调用JSON不完整（LLM已停止生成）');\n" +
             "          if (window[__prefix + 'poll']) clearInterval(window[__prefix + 'poll']);\n" +
             "          if (window[__prefix + 'obs']) { try { window[__prefix + 'obs'].disconnect(); } catch(_e) {} }\n" +
             "          finished = true;\n" +
+            "        } else {\n" +
+            "          // LLM还在生成中 - 继续等待，无超时限制\n" +
+            "          Android.log('[DEBUG][' + __rid + '] LLM仍在生成，继续等待JSON流完成（pollCount=' + pollCount + '）');\n" +
             "        }\n" +
             "        return; // 跳过后续稳定判定\n" +
             "      }\n" +
