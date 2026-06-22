@@ -359,7 +359,11 @@ public class McpServer {
 
             // 优先处理 /api/chat/ 路径（这些端点允许空 JSON 对象 {}）
             if (path.startsWith("/api/chat/")) {
-                log("收到聊天 API 请求: " + truncateForLogging(requestBody, 4096));
+                log("════════════════════════════════════════════════════════════");
+                log("▶ 收到聊天 API 请求: " + path);
+                log("  ├─ 请求体长度: " + (requestBody == null ? 0 : requestBody.length()) + " 字符");
+                log("  └─ 请求体内容: " + truncateForLogging(requestBody, 4096));
+                log("════════════════════════════════════════════════════════════");
                 handleChatRequest(path, requestBody, out);
                 return;
             }
@@ -542,18 +546,23 @@ public class McpServer {
         }
 
         private String executeToolCall(String jsonRpcStr) {
+            log("    [executeToolCall] 开始执行工具调用:");
+            log("      ├─ 输入JSON长度: " + (jsonRpcStr == null ? 0 : jsonRpcStr.length()) + " 字符");
             // 主路径：直接解析 JSON-RPC 调用
             Exception firstFail = null;
             String tryStr = jsonRpcStr;
             try {
                 JSONObject req = new JSONObject(tryStr);
                 String method = req.optString("method", "");
+                log("      ├─ JSON解析成功: method=" + method);
                 if (!"tools/call".equals(method)) {
+                    log("      └─ method非tools/call，跳过");
                     return null;
                 }
 
                 JSONObject params = req.optJSONObject("params");
                 if (params == null) {
+                    log("      └─ 缺少params");
                     return "错误: 缺少 params";
                 }
 
@@ -562,30 +571,47 @@ public class McpServer {
                 if (args == null) {
                     args = new JSONObject();
                 }
+                log("      ├─ 工具名: " + toolName);
+                log("      ├─ 参数: " + args.toString());
+                log("      └─ 调用ToolManager.callTool...");
 
                 log("执行工具: " + toolName);
+                long executeStart = System.currentTimeMillis();
                 JSONObject result = ToolManager.getInstance().callTool(toolName, args);
+                long executeCost = System.currentTimeMillis() - executeStart;
+                log("      [ToolManager] 返回结果: 耗时=" + executeCost + "ms, isNull=" + (result == null));
 
                 JSONArray contentArr = result.optJSONArray("content");
                 if (contentArr != null && contentArr.length() > 0) {
                     JSONObject first = contentArr.optJSONObject(0);
                     if (first != null) {
-                        return first.optString("text", "");
+                        String resultText = first.optString("text", "");
+                        log("      [ToolManager] 提取content[0].text: 长度=" + resultText.length() + " 字符");
+                        return resultText;
                     }
                 }
-                return result.toString();
+                String fallbackResult = result != null ? result.toString() : "(null)";
+                log("      [ToolManager] 无content数组，返回整个result.toString()");
+                return fallbackResult;
             } catch (Exception e) {
                 firstFail = e;
-                log("初次解析失败 (" + e.getMessage() + ")，尝试状态机自动补全");
+                log("    [executeToolCall] 初次解析失败: " + e.getMessage() + "，尝试状态机自动补全");
+                log("      ├─ 异常类型: " + e.getClass().getName());
+                log("      └─ 异常堆栈: " + android.util.Log.getStackTraceString(e));
             }
 
             // 降级：JSON 不完整时再试 robustCompleteJson 补全
+            log("    [executeToolCall] 尝试 robustCompleteJson 补全...");
             String completed = robustCompleteJson(tryStr);
             if (completed != null && !completed.equals(tryStr)) {
+                log("    [executeToolCall] 补全成功: 原长度=" + tryStr.length() + " → 补全后=" + completed.length() + " (+" + (completed.length() - tryStr.length()) + " 字符)");
                 try {
                     JSONObject req = new JSONObject(completed);
                     String method = req.optString("method", "");
-                    if (!"tools/call".equals(method)) return null;
+                    if (!"tools/call".equals(method)) {
+                        log("      └─ 补全后method非tools/call，跳过");
+                        return null;
+                    }
                     JSONObject params = req.optJSONObject("params");
                     if (params == null) return "错误: 缺少 params";
                     String toolName = params.optString("name", "");
@@ -602,8 +628,14 @@ public class McpServer {
                 } catch (Exception e) {
                     log("补全后仍失败: " + e.getMessage());
                 }
+            } else if (completed == null) {
+                log("    [executeToolCall] 补全失败: 无法补全JSON");
+            } else {
+                log("    [executeToolCall] 补全无变化（可能JSON本身就是完整的但解析仍失败）");
             }
-            return "工具执行失败: " + (firstFail != null ? firstFail.getMessage() : "JSON不完整且无法自动补全");
+            String errMsg = "工具执行失败: " + (firstFail != null ? firstFail.getMessage() : "JSON不完整且无法自动补全");
+            log("    [executeToolCall] 最终结果: " + errMsg);
+            return errMsg;
         }
 
         private void handleChatRequest(String path, String requestBody, final OutputStream out)
@@ -689,7 +721,11 @@ public class McpServer {
                             .put("error", "DeepSeek 未连接，请先打开 DeepSeek 页面并确保已登录")
                             .toString();
                     } else {
-                        log("DeepSeek 流式聊天请求: " + message.substring(0, Math.min(50, message.length())));
+                        log("DeepSeek 流式聊天请求: 完整消息=" + message);
+                        log("  ├─ 消息长度: " + message.length() + " 字符");
+                        log("  ├─ 消息前50字符: " + (message.length() > 50 ? message.substring(0, 50) + "..." : message));
+                        log("  ├─ 桥接器状态: " + (bridge.isRegistered() ? "已注册" : "未注册"));
+                        log("  └─ 请求ID: stream-" + System.currentTimeMillis());
 
                         // SSE 头部
                         String header = "HTTP/1.1 200 OK\r\n" +
@@ -754,7 +790,10 @@ public class McpServer {
                         while (round < maxRounds && !finalDone) {
                             round++;
                             final int currentRound = round;
-                            log("对话轮次 " + currentRound);
+                            log("══════════ 对话轮次 " + currentRound + "/" + maxRounds + " 开始 ══════════");
+                            log("  ├─ 输入消息长度: " + (currentMessage == null ? 0 : currentMessage.length()) + " 字符");
+                            log("  ├─ 输入消息前80字符: " + (currentMessage == null ? "(null)" : (currentMessage.length() > 80 ? currentMessage.substring(0, 80) + "..." : currentMessage)));
+                            log("  └─ 已完成轮数: " + (currentRound - 1) + "/" + maxRounds);
 
                             final CountDownLatch roundLatch = new CountDownLatch(1);
                             final AtomicReference<String> roundReplyRef = new AtomicReference<>();
@@ -767,31 +806,38 @@ public class McpServer {
                                         try {
                                             lastActivityAt.set(System.currentTimeMillis());
                                             if (chunk != null && chunk.startsWith("[STATUS]")) {
+                                                log("  [轮次" + currentRound + "] [STATUS] " + chunk);
                                                 JSONObject j = new JSONObject();
                                                 j.put("message", chunk);
                                                 writeEventChunk(out, "status", j.toString());
                                                 return;
                                             }
                                             if (chunk != null && chunk.startsWith("[DEBUG]")) {
-                                                log(chunk);
+                                                log("  [轮次" + currentRound + "] [DEBUG] " + chunk);
                                                 return;
                                             }
                                             // 检测是否为工具调用 JSON（避免把 JSON 当作普通文本塞给用户）
                                             boolean isToolCall = isToolCallJson(chunk);
-                                            
+                                            log("  [轮次" + currentRound + "] 收到chunk: 长度=" + (chunk == null ? 0 : chunk.length())
+                                                + " isToolCall=" + isToolCall
+                                                + " 内容=" + truncateForLogging(chunk, 200));
+
                                             // 防止心跳中断工具调用 JSON 流：当检测到工具调用 JSON 时，禁用心跳
                                             if (isToolCall && !inToolCallStream.get()) {
                                                 inToolCallStream.set(true);
-                                                log("【P3修复】检测到工具调用 JSON 流开始，禁用心跳 (chunk长度=" + (chunk == null ? 0 : chunk.length()) + ")");
+                                                log("  [轮次" + currentRound + "] 【P3修复】检测到工具调用 JSON 流开始，禁用心跳 (chunk长度=" + (chunk == null ? 0 : chunk.length()) + ")");
+                                                log("    ├─ jsonrpc标记: " + (chunk.indexOf("\"jsonrpc\":") != -1 ? "✓" : "✗"));
+                                                log("    ├─ method标记: " + (chunk.indexOf("\"method\"") != -1 ? "✓" : "✗"));
+                                                log("    └─ tools/call标记: " + (chunk.indexOf("\"tools/call\"") != -1 ? "✓" : "✗"));
                                             }
-                                            
+
                                             JSONObject j = new JSONObject();
                                             j.put("content", chunk == null ? "" : chunk);
                                             j.put("round", currentRound);
                                             j.put("isToolCall", isToolCall);
                                             writeEventChunk(out, "chunk", j.toString());
                                         } catch (Exception e) {
-                                            // ignore
+                                            log("  [轮次" + currentRound + "] chunk处理异常: " + e.getMessage());
                                         }
                                     }
 
@@ -799,27 +845,39 @@ public class McpServer {
                                     public void onDone(String reply) {
                                         try {
                                             roundReplyRef.set(reply);
+                                            log("  [轮次" + currentRound + "] onDone 触发:");
+                                            log("    ├─ 回复长度: " + (reply == null ? 0 : reply.length()) + " 字符");
+                                            log("    ├─ 回复是否为空: " + (reply == null || reply.isEmpty() ? "是" : "否"));
+                                            if (reply != null && reply.length() > 0) {
+                                                log("    ├─ 回复前150字符: " + (reply.length() > 150 ? reply.substring(0, 150) + "..." : reply));
+                                                log("    └─ 回复后100字符: " + (reply.length() > 100 ? "..." + reply.substring(reply.length() - 100) : reply));
+                                            }
                                             // 工具调用 JSON 流结束，恢复心跳
                                             if (inToolCallStream.getAndSet(false)) {
-                                                log("【P3修复】工具调用 JSON 流已完成，恢复心跳");
+                                                log("  [轮次" + currentRound + "] 【P3修复】工具调用 JSON 流已完成，恢复心跳");
                                             }
-                                            
+
                                             boolean isToolCall = isToolCallJson(reply);
+                                            log("  [轮次" + currentRound + "] 回复类型检测: isToolCall=" + isToolCall
+                                                + " (jsonrpc=" + (reply != null && reply.indexOf("\"jsonrpc\":") != -1) + ")"
+                                                + " (method=" + (reply != null && reply.indexOf("\"method\"") != -1) + ")"
+                                                + " (tools/call=" + (reply != null && reply.indexOf("\"tools/call\"") != -1) + ")");
+
                                             // P2 修复：记录 LLM 完整回复（非工具调用时），使用截断防止过长日志
                                             if (!isToolCall && reply != null && reply.length() > 0) {
-                                                log("LLM最终回复[轮次" + currentRound + "] " + analyzeReplyStructure(reply));
+                                                log("  [轮次" + currentRound + "] LLM最终回复结构: " + analyzeReplyStructure(reply));
                                                 String logReply = truncateForLogging(reply, 4096);
-                                                log("LLM最终回复[轮次" + currentRound + "]: " + logReply);
+                                                log("  [轮次" + currentRound + "] LLM最终回复内容: " + logReply);
                                             }
                                             JSONObject j = new JSONObject();
                                             j.put("content", reply == null ? "" : reply);
                                             j.put("round", currentRound);
                                             j.put("isToolCall", isToolCall);
                                             writeEventChunk(out, "done", j.toString());
-                                            log("轮次 " + currentRound + " 完成，长度=" + (reply == null ? 0 : reply.length())
-                                                + (isToolCall ? "（工具调用）" : "（文本回复）"));
+                                            log("  [轮次" + currentRound + "] 轮次完成: 长度=" + (reply == null ? 0 : reply.length())
+                                                + " 类型=" + (isToolCall ? "【工具调用】" : "【文本回复】"));
                                         } catch (Exception e) {
-                                            // ignore
+                                            log("  [轮次" + currentRound + "] onDone处理异常: " + e.getMessage());
                                         }
                                         roundLatch.countDown();
                                     }
@@ -828,18 +886,19 @@ public class McpServer {
                                     public void onError(String error) {
                                         try {
                                             roundErrorRef.set(error);
+                                            log("  [轮次" + currentRound + "] onError 触发: " + error);
                                             // 错误时恢复心跳，避免心跳被永久禁用
                                             if (inToolCallStream.getAndSet(false)) {
-                                                log("【P3修复】工具调用 JSON 流发生错误，恢复心跳: " + error);
+                                                log("  [轮次" + currentRound + "] 【P3修复】工具调用 JSON 流发生错误，恢复心跳: " + error);
                                             }
-                                            
+
                                             JSONObject j = new JSONObject();
                                             j.put("error", error == null ? "未知错误" : error);
                                             j.put("round", currentRound);
                                             writeEventChunk(out, "error", j.toString());
-                                            log("轮次 " + currentRound + " 错误: " + error);
+                                            log("  [轮次" + currentRound + "] 错误: " + error);
                                         } catch (Exception e) {
-                                            // ignore
+                                            log("  [轮次" + currentRound + "] onError处理异常: " + e.getMessage());
                                         }
                                         roundLatch.countDown();
                                     }
@@ -869,44 +928,75 @@ public class McpServer {
                             }
 
                             if (roundErrorRef.get() != null) {
-                                log("轮次 " + currentRound + " 错误: " + roundErrorRef.get());
+                                log("  [轮次" + currentRound + "] 检测到错误: " + roundErrorRef.get() + "，结束对话");
                                 break;
                             }
 
                             String reply = roundReplyRef.get();
                             if (reply == null || reply.isEmpty()) {
-                                log("轮次 " + round + " 回复为空，尝试获取备选内容后结束对话");
+                                log("  [轮次" + currentRound + "] 回复为空，结束对话");
                                 // 空回复：不继续轮询，结束对话
                                 break;
                             }
                             // 增加内容结构摘要日志（便于排查是否被截断）
-                            log("轮次 " + round + " 获取回复: " + analyzeReplyStructure(reply));
+                            log("  [轮次" + currentRound + "] 获取回复长度=" + reply.length() + " 字符");
+                            log("  [轮次" + currentRound + "] 内容结构: " + analyzeReplyStructure(reply));
+
+                            // 检测回复中是否包含 jsonrpc 标记
+                            log("  [轮次" + currentRound + "] 工具调用检测: " +
+                                "jsonrpc标记=" + (reply.indexOf("\"jsonrpc\"") != -1) + ", " +
+                                "method标记=" + (reply.indexOf("\"method\"") != -1) + ", " +
+                                "tools/call标记=" + (reply.indexOf("\"tools/call\"") != -1));
 
                             String toolJson = extractJsonRpcFromReply(reply);
                             if (toolJson == null) {
                                 finalDone = true;
-                                log("对话完成，无更多工具调用");
+                                log("  [轮次" + currentRound + "] ═══ 对话完成，无更多工具调用 ═══");
                                 break;
                             }
 
-                            log("检测到工具调用: " + truncateForLogging(toolJson, 4096));
-                            log("执行工具中...");
+                            log("  [轮次" + currentRound + "] ✓ 成功提取工具调用 JSON: 长度=" + toolJson.length() + " 字符");
+                            log("  [轮次" + currentRound + "]   ├─ JSON前100字符: " + (toolJson.length() > 100 ? toolJson.substring(0, 100) + "..." : toolJson));
+                            log("  [轮次" + currentRound + "]   └─ JSON内容: " + truncateForLogging(toolJson, 4096));
+                            log("  [轮次" + currentRound + "] 执行工具中...");
+
+                            // 解析工具名称用于日志
+                            String toolNameForLog = "";
+                            try {
+                                JSONObject tmpReq = new JSONObject(toolJson);
+                                JSONObject tmpParams = tmpReq.optJSONObject("params");
+                                if (tmpParams != null) {
+                                    toolNameForLog = tmpParams.optString("name", "");
+                                }
+                            } catch (Exception ignored) {}
+                            log("  [轮次" + currentRound + "]   ├─ 工具名: " + toolNameForLog);
+                            log("  [轮次" + currentRound + "]   └─ 工具ID: " + (toolJson.indexOf("\"id\"") != -1 ? "存在" : "缺失"));
+
+                            long toolStartTime = System.currentTimeMillis();
                             String toolResult = executeToolCall(toolJson);
-                            log("工具执行结果: " + truncateForLogging(toolResult, 4096));
+                            long toolCostMs = System.currentTimeMillis() - toolStartTime;
+
+                            log("  [轮次" + currentRound + "] 工具执行完成: 耗时=" + toolCostMs + "ms");
+                            log("  [轮次" + currentRound + "]   ├─ 结果长度: " + (toolResult == null ? 0 : toolResult.length()) + " 字符");
+                            log("  [轮次" + currentRound + "]   └─ 结果前200字符: " + truncateForLogging(toolResult, 200));
                             if (toolResult == null || toolResult.isEmpty()) {
                                 toolResult = "工具执行返回空结果";
+                                log("  [轮次" + currentRound + "]   ⚠ 工具结果为空，使用默认提示");
                             }
 
                             currentMessage = toolResult;
+                            log("  [轮次" + currentRound + "] 准备进入下一轮对话...");
 
                             JSONObject status = new JSONObject();
                             status.put("message", "工具执行完成，继续对话");
+                            status.put("tool", toolNameForLog);
+                            status.put("costMs", toolCostMs);
                             writeEventChunk(out, "status", status.toString());
                         }
 
                         endChunked(out);
                         stopHeartbeat.set(true);
-                        log("对话结束，共 " + round + " 轮");
+                        log("══════════ 对话结束，共 " + round + " 轮 ══════════");
                         return; // 流式路径结束，直接返回
                     } // end of send success block
                 } else if ("/api/chat/status".equals(action)) {
