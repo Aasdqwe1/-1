@@ -681,6 +681,9 @@ public class McpServer {
         private void handleChatRequest(String path, String requestBody, final OutputStream out)
                 throws IOException {
             String responseBody = "";
+            final AtomicBoolean isStreamingPath = new AtomicBoolean(false);
+            final AtomicReference<Thread> heartbeatThread = new AtomicReference<>(null);
+            final AtomicBoolean streamingCompleted = new AtomicBoolean(false);
 
             try {
                 JSONObject body = requestBody != null && requestBody.length() > 2
@@ -779,6 +782,9 @@ public class McpServer {
                             "\r\n";
                         out.write(header.getBytes("UTF-8"));
                         out.flush();
+                        
+                        // 标记已进入流式路径 - 用于异常处理时清理
+                        isStreamingPath.set(true);
 
                         writeEventChunk(out, "started", new JSONObject().put("ok", true).toString());
 
@@ -820,6 +826,9 @@ public class McpServer {
                         }, "DeepSeekHeartbeat");
                         heartbeat.setDaemon(true);
                         heartbeat.start();
+                        
+                        // 保存心跳线程引用用于异常处理时清理
+                        heartbeatThread.set(heartbeat);
 
                         // 对话循环
                         String currentMessage = message;
@@ -1064,6 +1073,7 @@ public class McpServer {
                         // 然后发送 chunked 编码终止符
                         endChunked(out);
                         stopHeartbeat.set(true);
+                        streamingCompleted.set(true);  // 标记流式传输已正常完成
                         log("══════════ 对话结束，共 " + round + " 轮 ══════════");
                         return; // 流式路径结束，直接返回
                     } // end of send success block
@@ -1085,13 +1095,58 @@ public class McpServer {
                     + "类型=" + e.getClass().getName()
                     + " msg=" + (e.getMessage() == null ? "(null)" : e.getMessage()));
                 log("聊天请求处理异常: 堆栈: " + android.util.Log.getStackTraceString(e));
-                try {
-                    responseBody = new JSONObject()
-                        .put("success", false)
-                        .put("error", e.getMessage() != null ? e.getMessage() : "未知错误")
-                        .toString();
-                } catch (JSONException je) {
-                    responseBody = "{\"success\":false,\"error\":\"内部错误\"}";
+                
+                // 如果发生异常时已进入流式路径，则需要终止流式传输
+                if (isStreamingPath.get()) {
+                    log("聊天异常时已处于流式路径，准备清理资源...");
+                } else {
+                    try {
+                        responseBody = new JSONObject()
+                            .put("success", false)
+                            .put("error", e.getMessage() != null ? e.getMessage() : "未知错误")
+                            .toString();
+                    } catch (JSONException je) {
+                        responseBody = "{\"success\":false,\"error\":\"内部错误\"}";
+                    }
+                }
+            } finally {
+                // 如果进入了流式路径但还未正常完成，需要确保流式传输正确终止
+                if (isStreamingPath.get() && !streamingCompleted.get()) {
+                    log("进入异常恢复流程（流式传输未正常完成）");
+                    try {
+                        // 停止心跳线程
+                        Thread hb = heartbeatThread.get();
+                        if (hb != null) {
+                            log("关闭心跳线程...");
+                            // 通过中断来停止心跳线程（更可靠的方式）
+                            hb.interrupt();
+                            // 等待线程结束，但设置超时以防止死锁
+                            try {
+                                hb.join(2000);
+                            } catch (InterruptedException ie) {
+                                Thread.currentThread().interrupt();
+                            }
+                        }
+                    } catch (Exception ex) {
+                        log("关闭心跳线程异常: " + ex.getMessage());
+                    }
+                    
+                    try {
+                        // 清空缓冲区中所有待处理的写入任务
+                        flushWriteHandler();
+                    } catch (Exception ex) {
+                        log("刷新写入处理器异常: " + ex.getMessage());
+                    }
+                    
+                    try {
+                        // 发送 chunked 编码终止符
+                        log("发送流式传输终止符...");
+                        endChunked(out);
+                    } catch (Exception ex) {
+                        log("发送终止符异常: " + ex.getMessage());
+                    }
+                    
+                    return; // 流式路径结束，返回
                 }
             }
 
