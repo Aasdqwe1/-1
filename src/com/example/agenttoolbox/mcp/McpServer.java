@@ -372,6 +372,7 @@ public class McpServer {
                     "\r\n";
                 out.write(response.getBytes("UTF-8"));
                 out.write(contentBytes);
+                out.flush();
                 log("返回页面: " + fileName + " (" + contentBytes.length + " 字节)");
             } else {
                 sendErrorResponse(out, 404, "Not Found");
@@ -508,6 +509,7 @@ public class McpServer {
                 responseBody;
 
             out.write(response.getBytes("UTF-8"));
+            out.flush();
         }
 
         /**
@@ -1392,6 +1394,7 @@ public class McpServer {
                 "Content-Length: 0\r\n" +
                 "\r\n";
             out.write(response.getBytes("UTF-8"));
+            out.flush();
         }
 
         private void sendErrorResponse(OutputStream out, int code, String message) throws IOException {
@@ -1402,6 +1405,7 @@ public class McpServer {
                 "\r\n" +
                 body;
             out.write(response.getBytes("UTF-8"));
+            out.flush();
             log("返回错误: " + code + " " + message);
         }
 
@@ -1411,6 +1415,7 @@ public class McpServer {
                 "Access-Control-Allow-Origin: *\r\n" +
                 "\r\n";
             out.write(response.getBytes("UTF-8"));
+            out.flush();
             log("返回心跳确认: 204 No Content");
         }
 
