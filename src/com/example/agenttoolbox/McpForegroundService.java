@@ -10,6 +10,7 @@ import android.content.Intent;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
+import android.util.Log;
 import android.widget.Toast;
 
 import com.example.agenttoolbox.mcp.McpServer;
@@ -18,9 +19,11 @@ import java.io.IOException;
 /**
  * MCP前台服务 - 保持应用在后台活跃运行
  * 使用WakeLock防止CPU休眠，前台通知确保服务不被系统杀死
+ * 使用dataSync前台服务类型
  */
 public class McpForegroundService extends Service {
 
+    private static final String TAG = "McpForegroundService";
     private static final String CHANNEL_ID = "McpServiceChannel";
     private static final int NOTIFICATION_ID = 1001;
 
@@ -41,6 +44,7 @@ public class McpForegroundService extends Service {
     public void onCreate() {
         super.onCreate();
         instance = this;
+        Log.i(TAG, "onCreate");
 
         // 创建前台通知渠道
         createNotificationChannel();
@@ -55,12 +59,15 @@ public class McpForegroundService extends Service {
             wakeLock.setReferenceCounted(false);
         }
 
-        // 启动前台服务
+        // 启动前台服务 - 必须尽快调用
         startForeground(NOTIFICATION_ID, createNotification());
+        Log.i(TAG, "startForeground called");
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        Log.i(TAG, "onStartCommand, intent=" + intent);
+        
         // 重新获取WakeLock
         if (wakeLock != null && !wakeLock.isHeld()) {
             wakeLock.acquire(10 * 60 * 60 * 1000L); // 10小时
@@ -68,10 +75,14 @@ public class McpForegroundService extends Service {
 
         // 启动MCP服务器
         if (mcpServer == null) {
+            Log.i(TAG, "Creating McpServer");
             mcpServer = new McpServer(8080, this);
             try {
                 mcpServer.start();
+                Log.i(TAG, "McpServer started successfully");
+                Toast.makeText(this, "MCP服务启动成功", Toast.LENGTH_SHORT).show();
             } catch (IOException e) {
+                Log.e(TAG, "Failed to start McpServer: " + e.getMessage());
                 Toast.makeText(this, "启动MCP服务失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
             }
         }
