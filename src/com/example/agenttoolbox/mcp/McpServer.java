@@ -427,55 +427,36 @@ public class McpServer {
          * 4. 支持流式部分 JSON（如仅 "id":"xxx" 部分）
          * 这样可以在 JSON 流的早期阶段就禁用心跳，避免被心跳中断
          */
+        /**
+         * Check if text contains JSON-RPC 2.0 format (with optional spacing and quote variants)
+         */
+        private boolean hasJsonRpc20Format(String text) {
+            // Check for double quotes with 2.0 version
+            if (text.indexOf("\"jsonrpc\":\"2.0\"") != -1 || text.indexOf("\"jsonrpc\": \"2.0\"") != -1) {
+                return true;
+            }
+            // Also check for single quotes (valid in JavaScript contexts)
+            if (text.indexOf("'jsonrpc':'2.0'") != -1 || text.indexOf("'jsonrpc': '2.0'") != -1) {
+                return true;
+            }
+            return false;
+        }
+
         private boolean isToolCallJson(String text) {
             if (text == null || text.length() == 0) return false;
             
-            // 快速检测：查找所有 JSON-RPC 相关标记
-            // 注意：text 可能是 "好的，我来生成...\n{\"jsonrpc\":\"2.0\",..." 格式
-            boolean hasJsonrpc = text.indexOf("\"jsonrpc\"") != -1 || text.indexOf("'jsonrpc'") != -1;
+            // Check for JSON-RPC 2.0 format (requires strict version check)
+            boolean hasJsonrpc20 = hasJsonRpc20Format(text);
+            if (!hasJsonrpc20) {
+                return false;
+            }
+            
+            // Check for tools/call or method fields to confirm it's a tool call
             boolean hasToolsCall = text.indexOf("\"tools/call\"") != -1 || text.indexOf("'tools/call'") != -1;
             boolean hasMethod = text.indexOf("\"method\"") != -1 || text.indexOf("'method'") != -1;
             
-            // 必须同时包含 jsonrpc 和 (tools/call 或 method)，避免误检测普通文本
-            if (hasJsonrpc && (hasToolsCall || hasMethod)) {
-                // 进一步验证：确保能找到有效的 JSON 对象
-                // 检查是否存在 "jsonrpc":"2.0" 模式（严格的 JSON-RPC 格式）
-                if (text.indexOf("\"jsonrpc\"") != -1 && 
-                    (text.indexOf("\"jsonrpc\":\"2.0\"") != -1 || text.indexOf("\"jsonrpc\": \"2.0\"") != -1)) {
-                    return true;
-                }
-                // 或者检查是否包含明确的工具调用标记和 method 字段
-                if (hasToolsCall && hasMethod) {
-                    return true;
-                }
-            }
-            
-            // 检测是否为部分流式 JSON（例如只有 "jsonrpc":"2.0","id":"..."）
-            // 但要更严格：必须有清晰的 jsonrpc 版本标记
-            if (hasJsonrpc && text.indexOf("\"id\"") != -1) {
-                if (text.indexOf("\"jsonrpc\":\"2.0\"") != -1 || text.indexOf("\"jsonrpc\": \"2.0\"") != -1) {
-                    return true;
-                }
-            }
-            
-            // 注意：不再进行工具名检测（这导致了误检测）
-            // 工具名检测太容易匹配普通文本中的 "math_calculator" 等词语
-            
-            // 检测是否以 { 开头（JSON 对象的开始）并包含完整的 JSON-RPC 标记
-            String trimmed = text.trim();
-            // 跳过中文前缀后检查是否以 { 开头
-            int braceIdx = trimmed.indexOf('{');
-            if (braceIdx != -1) {
-                String afterPrefix = trimmed.substring(braceIdx);
-                // 必须包含严格的 jsonrpc 版本标记
-                if (afterPrefix.indexOf("\"jsonrpc\":\"2.0\"") != -1) {
-                    if (afterPrefix.indexOf("\"method\"") != -1 || afterPrefix.indexOf("\"tools/call\"") != -1) {
-                        return true;
-                    }
-                }
-            }
-            
-            return false;
+            // Must have either tools/call or method to be a valid tool call
+            return hasToolsCall || hasMethod;
         }
 
         private String extractJsonRpcFromReply(String reply) {
