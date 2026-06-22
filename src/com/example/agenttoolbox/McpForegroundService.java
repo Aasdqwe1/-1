@@ -10,8 +10,10 @@ import android.content.Intent;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
+import android.widget.Toast;
 
 import com.example.agenttoolbox.mcp.McpServer;
+import java.io.IOException;
 
 /**
  * MCP前台服务 - 保持应用在后台活跃运行
@@ -67,7 +69,11 @@ public class McpForegroundService extends Service {
         // 启动MCP服务器
         if (mcpServer == null) {
             mcpServer = new McpServer(8080, this);
-            mcpServer.start();
+            try {
+                mcpServer.start();
+            } catch (IOException e) {
+                Toast.makeText(this, "启动MCP服务失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            }
         }
 
         // START_STICKY确保服务被杀死后能重新启动
