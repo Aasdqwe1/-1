@@ -74,6 +74,9 @@ public class ToolManager {
      * 调用工具
      */
     public JSONObject callTool(String name, JSONObject arguments) {
+        android.util.Log.d("ToolManager", "[CALL_TOOL] name=" + name);
+        android.util.Log.d("ToolManager", "[CALL_TOOL_ARGS] " + (arguments != null ? arguments.toString().substring(0, Math.min(200, arguments.toString().length())) : "null"));
+        
         JSONObject result = new JSONObject();
         JSONArray content = new JSONArray();
         JSONObject contentItem = new JSONObject();
@@ -81,6 +84,7 @@ public class ToolManager {
         try {
             Tool tool = tools.get(name);
             if (tool == null) {
+                android.util.Log.e("ToolManager", "[CALL_TOOL_NOT_FOUND] Tool not found: " + name);
                 result.put("isError", true);
                 contentItem.put("type", "text");
                 contentItem.put("text", "工具不存在: " + name);
@@ -89,7 +93,10 @@ public class ToolManager {
                 return result;
             }
             
+            android.util.Log.d("ToolManager", "[TOOL_EXECUTE_START] Executing " + name);
             String output = tool.execute(arguments);
+            android.util.Log.d("ToolManager", "[TOOL_EXECUTE_END] Completed " + name + ", output length=" + (output != null ? output.length() : 0));
+            
             result.put("isError", false);
             contentItem.put("type", "text");
             contentItem.put("text", output);
@@ -97,6 +104,7 @@ public class ToolManager {
             result.put("content", content);
             
         } catch (Exception e) {
+            android.util.Log.e("ToolManager", "[TOOL_EXECUTE_ERROR] Error executing " + name, e);
             try {
                 result.put("isError", true);
                 contentItem.put("type", "text");
@@ -109,6 +117,7 @@ public class ToolManager {
             }
         }
         
+        android.util.Log.d("ToolManager", "[CALL_TOOL_RESULT] " + result.toString().substring(0, Math.min(200, result.toString().length())));
         return result;
     }
     

@@ -59,7 +59,8 @@ public class DeepSeekChatBridge {
     public synchronized void register(WebView webView) {
         this.boundWebView = webView;
         this.mainHandler = new Handler(Looper.getMainLooper());
-        android.util.Log.d("DeepSeekChatBridge", "已注册 WebView: " + (webView != null ? "有效" : "null"));
+        android.util.Log.d("DeepSeekChatBridge", "[REGISTER] 已注册 WebView: " + (webView != null ? "有效" : "null"));
+        android.util.Log.d("DeepSeekChatBridge", "[REGISTER] WebView object: " + webView);
     }
 
     // Activity 返回/销毁时调用：保持 WebView 存活
@@ -116,6 +117,8 @@ public class DeepSeekChatBridge {
      * 最长等待 180 秒。返回 null 表示失败或未捕获到内容。
      */
     public String sendMessage(final String message) {
+        android.util.Log.d("DeepSeekChatBridge", "[SEND_MESSAGE] Starting blocking send, msg length=" + (message != null ? message.length() : 0));
+        
         final CountDownLatch latch = new CountDownLatch(1);
         final java.util.concurrent.atomic.AtomicReference<String> replyRef =
             new java.util.concurrent.atomic.AtomicReference<String>();
@@ -127,11 +130,13 @@ public class DeepSeekChatBridge {
             public void onChunk(String chunk) { /* 流式过程忽略 */ }
             @Override
             public void onDone(String reply) {
+                android.util.Log.d("DeepSeekChatBridge", "[SEND_MESSAGE_DONE] Received complete reply, length=" + (reply != null ? reply.length() : 0));
                 replyRef.set(reply);
                 latch.countDown();
             }
             @Override
             public void onError(String error) {
+                android.util.Log.e("DeepSeekChatBridge", "[SEND_MESSAGE_ERROR] " + error);
                 errRef.set(error);
                 latch.countDown();
             }
@@ -139,19 +144,22 @@ public class DeepSeekChatBridge {
 
         try {
             // 延长到 1800 秒（30 分钟），给 LLM 足够时间处理复杂任务
+            android.util.Log.d("DeepSeekChatBridge", "[SEND_MESSAGE_WAIT] Waiting for response...");
             if (!latch.await(1800, java.util.concurrent.TimeUnit.SECONDS)) {
                 android.util.Log.w("DeepSeekChatBridge",
-                    "sendMessage 超时（1800s），message=" + (message == null ? "" : message.substring(0, Math.min(40, message.length()))));
+                    "[SEND_MESSAGE_TIMEOUT] Timeout (1800s), message=" + (message == null ? "" : message.substring(0, Math.min(40, message.length()))));
                 return null;
             }
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
+            android.util.Log.e("DeepSeekChatBridge", "[SEND_MESSAGE_INTERRUPTED] Interrupted");
             return null;
         }
         if (errRef.get() != null) {
-            android.util.Log.w("DeepSeekChatBridge", "sendMessage 错误: " + errRef.get());
+            android.util.Log.w("DeepSeekChatBridge", "[SEND_MESSAGE_ERROR_RESULT] " + errRef.get());
             return null;
         }
+        android.util.Log.d("DeepSeekChatBridge", "[SEND_MESSAGE_SUCCESS] Returning reply");
         return replyRef.get();
     }
 
@@ -166,6 +174,7 @@ public class DeepSeekChatBridge {
             handler = mainHandler;
         }
         if (wb == null || handler == null) {
+            android.util.Log.e("DeepSeekChatBridge", "[SEND_STREAM_ERROR] WebView未注册或handler为null");
             callback.onError("WebView 未注册");
             return;
         }
@@ -180,9 +189,12 @@ public class DeepSeekChatBridge {
         replyById.put(requestId, replyRef);
         errorById.put(requestId, errorRef);
 
+        android.util.Log.d("DeepSeekChatBridge", "[SEND_STREAM_START] requestId=" + requestId + " msgLen=" + (message != null ? message.length() : 0));
+
         handler.post(new Runnable() {
             @Override
             public void run() {
+                android.util.Log.d("DeepSeekChatBridge", "[SEND_STREAM_INJECT_JS] Injecting chat script into WebView");
                 injectChatScript(wb, requestId, message);
 
                 // 后台线程等待完成，以便调 onDone / onError
@@ -192,25 +204,32 @@ public class DeepSeekChatBridge {
                         try {
                             // 延长到 3600 秒（1 小时），让 JavaScript 轮询循环的动态超时真正控制
                             // JavaScript 端已有 pollCount 检查（600/900/1800 = 5/7.5/15 分钟）
+                            android.util.Log.d("DeepSeekChatBridge", "[SEND_STREAM_WAITING] requestId=" + requestId + " waiting for response...");
                             boolean completed = latch.await(3600, TimeUnit.SECONDS);
                             String reply = replyRef.get();
                             String err = errorRef.get();
                             StreamCallback cb = callbacksById.get(requestId);
                             if (!completed) {
+                                android.util.Log.w("DeepSeekChatBridge", "[SEND_STREAM_TIMEOUT] requestId=" + requestId);
                                 if (cb != null) cb.onError("流式等待超时（3600s，JavaScript 端未触发完成）");
                             } else if (err != null) {
+                                android.util.Log.e("DeepSeekChatBridge", "[SEND_STREAM_JS_ERROR] requestId=" + requestId + " error=" + err);
                                 if (cb != null) cb.onError(err);
                             } else if (reply != null) {
+                                android.util.Log.d("DeepSeekChatBridge", "[SEND_STREAM_JS_DONE] requestId=" + requestId + " replyLen=" + reply.length());
                                 if (cb != null) cb.onDone(reply);
                             } else {
+                                android.util.Log.w("DeepSeekChatBridge", "[SEND_STREAM_NO_REPLY] requestId=" + requestId);
                                 if (cb != null) cb.onError("未收到回复");
                             }
                         } catch (InterruptedException e) {
+                            android.util.Log.e("DeepSeekChatBridge", "[SEND_STREAM_INTERRUPTED] requestId=" + requestId, e);
                             StreamCallback cb = callbacksById.get(requestId);
                             if (cb != null) cb.onError("等待被中断");
                             Thread.currentThread().interrupt();
                         } finally {
                             cleanupRequest(requestId);
+                            android.util.Log.d("DeepSeekChatBridge", "[SEND_STREAM_CLEANUP] requestId=" + requestId + " cleaned up");
                         }
                     }
                 }).start();
@@ -223,6 +242,7 @@ public class DeepSeekChatBridge {
      * 用于向客户端发送心跳，避免 HTTP 端误判为"超时"。
      */
     public void onDeepSeekStatus(String requestId, String statusText) {
+        android.util.Log.d("DeepSeekChatBridge", "[ON_STATUS] requestId=" + requestId + " status=" + statusText);
         if (requestId == null) return;
         StreamCallback cb = callbacksById.get(requestId);
         if (cb != null) {
@@ -1158,10 +1178,13 @@ public class DeepSeekChatBridge {
     // ======================================================================
 
     public void onDeepSeekChunk(String requestId, String chunk) {
+        android.util.Log.d("DeepSeekChatBridge", "[ON_CHUNK] requestId=" + requestId + " chunkLen=" + (chunk != null ? chunk.length() : 0));
         if (requestId == null) return;
         StreamCallback cb = callbacksById.get(requestId);
         if (cb != null) {
-            try { cb.onChunk(chunk); } catch (Exception e) { /* ignore */ }
+            try { cb.onChunk(chunk); } catch (Exception e) { 
+                android.util.Log.e("DeepSeekChatBridge", "[ON_CHUNK_ERROR] Error calling callback", e);
+            }
         }
     }
 
@@ -1199,6 +1222,7 @@ public class DeepSeekChatBridge {
      * P2 修复：完整记录 DeepSeek 回复内容
      */
     public void onDeepSeekReply(String requestId, String reply) {
+        android.util.Log.d("DeepSeekChatBridge", "[ON_REPLY] requestId=" + requestId + " replyLen=" + (reply != null ? reply.length() : 0));
         if (requestId == null) return;
         // 若 JS 回传了空回复，先在 Java 侧做一次备用 DOM 提取再放行
         if (reply == null || reply.isEmpty()) {
@@ -1292,6 +1316,7 @@ public class DeepSeekChatBridge {
     }
 
     public void onDeepSeekError(String requestId, String error) {
+        android.util.Log.e("DeepSeekChatBridge", "[ON_ERROR] requestId=" + requestId + " error=" + error);
         if (requestId == null) return;
         CountDownLatch l = latchById.get(requestId);
         AtomicReference<String> errRef = errorById.get(requestId);

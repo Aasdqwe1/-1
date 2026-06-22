@@ -45,14 +45,20 @@ public class JavaScriptBridge {
      */
     @JavascriptInterface
     public void onToolCallDetected(final String toolName, final String argumentsJson) {
+        // DEBUG: Log tool call detection from frontend
+        android.util.Log.d("JSBridge", "[TOOL_DETECTED] toolName=" + toolName);
+        android.util.Log.d("JSBridge", "[TOOL_DETECTED_ARGS] " + (argumentsJson != null ? argumentsJson.substring(0, Math.min(200, argumentsJson.length())) : "null"));
+        
         handler.post(new Runnable() {
             @Override
             public void run() {
+                android.util.Log.d("JSBridge", "[TOOL_DETECTED_DISPATCH] Dispatching to listener");
                 if (listener != null) {
                     listener.onToolCallDetected(toolName, argumentsJson);
                 }
                 
                 // 自动执行工具
+                android.util.Log.d("JSBridge", "[TOOL_EXECUTE_START] Starting tool execution: " + toolName);
                 executeTool(toolName, argumentsJson);
             }
         });
@@ -74,9 +80,17 @@ public class JavaScriptBridge {
             requestId = requestIdOrReply;
             reply = replyOrNull;
         }
+        
+        // DEBUG: Log DeepSeek reply received
+        android.util.Log.d("JSBridge", "[DEEPSEEK_REPLY] requestId=" + requestId + " replyLen=" + (reply != null ? reply.length() : 0));
+        if (reply != null && reply.length() > 0) {
+            android.util.Log.d("JSBridge", "[DEEPSEEK_REPLY_PREVIEW] " + reply.substring(0, Math.min(200, reply.length())));
+        }
+        
         handler.post(new Runnable() {
             @Override
             public void run() {
+                android.util.Log.d("JSBridge", "[DEEPSEEK_REPLY_DISPATCH] Dispatching to DeepSeekChatBridge");
                 DeepSeekChatBridge.getInstance().onDeepSeekReply(requestId, reply);
             }
         });
@@ -97,6 +111,10 @@ public class JavaScriptBridge {
             requestId = requestIdOrChunk;
             chunk = chunkOrNull;
         }
+        
+        // DEBUG: Log streaming chunk
+        android.util.Log.d("JSBridge", "[DEEPSEEK_CHUNK] requestId=" + requestId + " chunkLen=" + (chunk != null ? chunk.length() : 0));
+        
         handler.post(new Runnable() {
             @Override
             public void run() {
@@ -120,9 +138,14 @@ public class JavaScriptBridge {
             requestId = requestIdOrError;
             error = errorOrNull;
         }
+        
+        // DEBUG: Log DeepSeek error
+        android.util.Log.w("JSBridge", "[DEEPSEEK_ERROR] requestId=" + requestId + " error=" + error);
+        
         handler.post(new Runnable() {
             @Override
             public void run() {
+                android.util.Log.w("JSBridge", "[DEEPSEEK_ERROR_DISPATCH] Dispatching to DeepSeekChatBridge");
                 DeepSeekChatBridge.getInstance().onDeepSeekError(requestId, error);
             }
         });
@@ -143,6 +166,10 @@ public class JavaScriptBridge {
             requestId = requestIdOrStatus;
             status = statusOrNull;
         }
+        
+        // DEBUG: Log status update
+        android.util.Log.d("JSBridge", "[DEEPSEEK_STATUS] requestId=" + requestId + " status=" + status);
+        
         handler.post(new Runnable() {
             @Override
             public void run() {
@@ -189,19 +216,24 @@ public class JavaScriptBridge {
             try {
                 arguments = new JSONObject(argumentsJson);
             } catch (Exception e) {
+                android.util.Log.w("JSBridge", "[TOOL_PARSE_ERROR] Failed to parse args for " + toolName);
                 arguments = new JSONObject();
             }
             
             // 调用工具管理器执行
+            android.util.Log.d("JSBridge", "[TOOL_MANAGER_CALL] Calling ToolManager.callTool(" + toolName + ")");
             JSONObject result = ToolManager.getInstance().callTool(toolName, arguments);
             
             // 把结果注入回网页
             final String resultJson = result.toString();
+            android.util.Log.d("JSBridge", "[TOOL_RESULT_OBTAINED] " + toolName + " returned " + resultJson.length() + " bytes");
             
             handler.post(new Runnable() {
                 @Override
                 public void run() {
+                    android.util.Log.d("JSBridge", "[TOOL_INJECT_START] Injecting tool result back to WebView");
                     injectToolResult(resultJson);
+                    android.util.Log.d("JSBridge", "[TOOL_INJECT_DONE] Tool result injected");
                     
                     if (listener != null) {
                         listener.onToolResult(toolName, resultJson);
@@ -211,6 +243,7 @@ public class JavaScriptBridge {
             
         } catch (Exception e) {
             final String errorMsg = "工具执行失败: " + e.getMessage();
+            android.util.Log.e("JSBridge", "[TOOL_EXECUTE_ERROR] " + errorMsg, e);
             handler.post(new Runnable() {
                 @Override
                 public void run() {
@@ -224,6 +257,7 @@ public class JavaScriptBridge {
      * 把工具执行结果注入回网页
      */
     private void injectToolResult(String resultJson) {
+        android.util.Log.d("JSBridge", "[INJECT_RESULT_JS] Starting JavaScript injection");
         String js = "(function() {" +
             "  // 创建一个隐藏的结果容器" +
             "  var resultContainer = document.getElementById('mcp-tool-result');" +
@@ -241,11 +275,15 @@ public class JavaScriptBridge {
             "  });" +
             "  document.dispatchEvent(event);" +
             "  " +
+            "  // Log on the frontend side too" +
+            "  console.log('[MCP-Frontend] Tool result received: ' + Object.keys(" + resultJson + ").length + ' keys');" +
+            "  " +
             "  // 尝试找到输入框并填入结果（辅助用户粘贴）" +
             "  tryToInjectResult(" + resultJson + ");" +
             "})()";
         
         webView.evaluateJavascript(js, null);
+        android.util.Log.d("JSBridge", "[INJECT_RESULT_JS_DONE] JavaScript injection completed");
     }
     
     /**
@@ -358,17 +396,22 @@ public class JavaScriptBridge {
             "    if (processedMessages.has(msgId)) return;" +
             "    processedMessages.add(msgId);" +
             "    " +
+            "    console.log('[MCP-Frontend] Checking message, hash=' + msgId + ', textLen=' + text.length);" +
+            "    " +
             "    // 提取并解析工具调用" +
             "    var jsonObj = extractJsonFromText(text);" +
             "    var toolCall = parseToolCall(jsonObj);" +
             "    " +
             "    if (toolCall && toolCall.name) {" +
+            "      console.log('[MCP-Frontend] Tool call detected: ' + toolCall.name);" +
             "      Android.log('检测到工具调用: ' + toolCall.name);" +
             "      Android.onToolCallDetected(toolCall.name, JSON.stringify(toolCall.arguments));" +
             "      " +
             "      // 给消息添加标记，显示正在执行" +
             "      messageEl.__mcpProcessing = true;" +
             "      showToolCallStatus(messageEl, '⏳ 工具执行中...');" +
+            "    } else {" +
+            "      if (jsonObj) console.log('[MCP-Frontend] JSON detected but not a tool call');" +
             "    }" +
             "  }" +
             "  " +

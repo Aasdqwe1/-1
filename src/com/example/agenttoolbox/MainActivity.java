@@ -197,10 +197,12 @@ public class MainActivity extends Activity {
      */
     private void startServer() {
         try {
+            android.util.Log.d("MainActivity", "[SERVER_START] Starting MCP server on port " + PORT);
             mcpServer = new McpServer(PORT, MainActivity.this);
             mcpServer.setOnLogListener(new McpServer.OnLogListener() {
                 @Override
                 public void onLog(final String message) {
+                    android.util.Log.d("McpServer", message);
                     handler.post(new Runnable() {
                         @Override
                         public void run() {
@@ -216,8 +218,12 @@ public class MainActivity extends Activity {
             btnStart.setEnabled(false);
             btnStop.setEnabled(true);
             
+            android.util.Log.i("MainActivity", "[SERVER_START_SUCCESS] Server started at http://" + mcpServer.getLocalIpAddress() + ":" + PORT);
+            appendLog("✓ MCP服务已启动，监听地址: http://" + mcpServer.getLocalIpAddress() + ":" + PORT);
+            
         } catch (Exception e) {
-            appendLog("启动服务失败: " + e.getMessage());
+            android.util.Log.e("MainActivity", "[SERVER_START_ERROR] Failed to start server", e);
+            appendLog("✗ 启动服务失败: " + e.getMessage());
         }
     }
     
@@ -225,6 +231,7 @@ public class MainActivity extends Activity {
      * 停止服务
      */
     private void stopServer() {
+        android.util.Log.i("MainActivity", "[SERVER_STOP] Stopping MCP server");
         if (mcpServer != null) {
             mcpServer.stop();
             mcpServer = null;
@@ -234,19 +241,26 @@ public class MainActivity extends Activity {
         tvAddress.setText("监听地址：--");
         btnStart.setEnabled(true);
         btnStop.setEnabled(false);
+        
+        appendLog("✓ MCP服务已停止");
+        android.util.Log.i("MainActivity", "[SERVER_STOP_SUCCESS] Server stopped");
     }
     
     /**
      * 打开 DeepSeek 助手页面
      */
     private void openDeepSeek() {
+        android.util.Log.i("MainActivity", "[OPEN_DEEPSEEK] Opening DeepSeek Activity");
+        
         // 如果 MCP 服务没启动，先提示用户启动
         if (!McpServer.isServiceRunning()) {
-            appendLog("提示：请先启动 MCP 服务，以便 DeepSeek 使用工具能力");
+            android.util.Log.w("MainActivity", "[OPEN_DEEPSEEK] Warning: MCP service not running");
+            appendLog("⚠ 提示：请先启动 MCP 服务，以便 DeepSeek 使用工具能力");
         }
         
         Intent intent = new Intent(MainActivity.this, DeepSeekActivity.class);
         startActivity(intent);
+        android.util.Log.i("MainActivity", "[OPEN_DEEPSEEK_STARTED] DeepSeek Activity started");
     }
     
     /**

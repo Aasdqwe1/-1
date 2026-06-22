@@ -465,10 +465,17 @@ public class McpServer {
             // 这是一种防御性的设计，可以防止含有控制字符的恶意 JSON 被处理
             requestBody = sanitizeRequestBody(requestBody);
             
+            // DEBUG: Log HTTP request details
+            android.util.Log.d("McpServer", "[HTTP_REQUEST] path=" + path + " bodyLen=" + (requestBody != null ? requestBody.length() : 0));
+            if (requestBody != null && requestBody.length() > 0) {
+                android.util.Log.d("McpServer", "[HTTP_REQUEST_BODY] " + truncateForLogging(requestBody, 500));
+            }
+            
             // P3 修复：检测空请求
             String trimmedBody = requestBody.trim();
             if (trimmedBody.isEmpty()) {
                 // 完全空请求，可能是心跳包，返回 204 No Content
+                android.util.Log.d("McpServer", "[HTTP_REQUEST_EMPTY] Empty request (heartbeat)");
                 log("收到空请求（心跳包），已忽略");
                 sendNoContentResponse(out);
                 return;
@@ -476,6 +483,7 @@ public class McpServer {
 
             // 优先处理 /api/chat/ 路径（这些端点允许空 JSON 对象 {}）
             if (path.startsWith("/api/chat/")) {
+                android.util.Log.i("McpServer", "[HTTP_CHAT_REQUEST] path=" + path);
                 log("════════════════════════════════════════════════════════════");
                 log("▶ 收到聊天 API 请求: " + path);
                 log("  ├─ 请求体长度: " + (requestBody == null ? 0 : requestBody.length()) + " 字符");
@@ -488,15 +496,18 @@ public class McpServer {
             // 对于非 chat 路径，检查是否为空 JSON 对象
             if ("{}".equals(trimmedBody)) {
                 // 空 JSON 对象（可能由删除控制字符后产生），无法处理，返回 400 Bad Request
+                android.util.Log.w("McpServer", "[HTTP_REQUEST_EMPTY_JSON] Empty JSON object");
                 log("收到空 JSON 对象请求 {}，无法处理");
                 sendErrorResponse(out, 400, "Empty request object");
                 return;
             }
 
             // P2 修复：截断日志防止过长
+            android.util.Log.d("McpServer", "[HTTP_JSON_RPC_REQUEST] Processing JSON-RPC request");
             log("收到请求: " + truncateForLogging(requestBody, 4096));
 
             String responseBody = handleJsonRpcRequest(requestBody);
+            android.util.Log.d("McpServer", "[HTTP_JSON_RPC_RESPONSE] Sending response, len=" + responseBody.length());
             log("返回响应: " + truncateForLogging(responseBody, 4096));
 
             String response = "HTTP/1.1 200 OK\r\n" +
@@ -510,6 +521,7 @@ public class McpServer {
 
             out.write(response.getBytes("UTF-8"));
             out.flush();
+            android.util.Log.d("McpServer", "[HTTP_RESPONSE_SENT] Response sent for " + path);
         }
 
         /**
