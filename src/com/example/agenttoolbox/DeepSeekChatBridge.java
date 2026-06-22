@@ -457,6 +457,57 @@ public class DeepSeekChatBridge {
             "    // ===== 第3步：清理格式 =====\n" +
             "    md = md.replace(/\\n{3,}/g, '\\n\\n');\n" +
             "    md = md.trim();\n" +
+            "\n" +
+            "    // ===== 第4步：工具调用 JSON 检测与提取 =====\n" +
+            "    // DeepSeek 有时将工具调用 JSON 嵌在 <span> 中，前面还有说明文字：\n" +
+            "    //   \"好的，我来生成...：\\n{\"jsonrpc\":\"2.0\",...}\"\n" +
+            "    // 此时需要独立提取 JSON，忽略前面的说明文字\n" +
+            "    if (md.indexOf('\"jsonrpc\"') !== -1 || md.indexOf('\"jsonrpc\":') !== -1) {\n" +
+            "      var jsonIdx = md.indexOf('\"jsonrpc\"');\n" +
+            "      if (jsonIdx === -1) jsonIdx = md.indexOf('\"jsonrpc\":');\n" +
+            "      if (jsonIdx !== -1) {\n" +
+            "        // 向前找最近的 { 作为 JSON 起点\n" +
+            "        var start = -1;\n" +
+            "        for (var i = jsonIdx; i >= 0; i--) {\n" +
+            "          if (md.charAt(i) === '{') {\n" +
+            "            start = i;\n" +
+            "            break;\n" +
+            "          }\n" +
+            "        }\n" +
+            "        if (start !== -1) {\n" +
+            "          // 状态机向后扫描，跟踪字符串/转义/嵌套，找到匹配的 }\n" +
+            "          var inStr = false;\n" +
+            "          var quoteChar = '\"';\n" +
+            "          var esc = false;\n" +
+            "          var depth = 1;\n" +
+            "          var end = -1;\n" +
+            "          for (var j = start + 1; j < md.length; j++) {\n" +
+            "            var c = md.charAt(j);\n" +
+            "            if (inStr) {\n" +
+            "              if (esc) { esc = false; continue; }\n" +
+            "              if (c === '\\\\') { esc = true; continue; }\n" +
+            "              if (c === quoteChar) { inStr = false; continue; }\n" +
+            "              continue;\n" +
+            "            }\n" +
+            "            if (c === '\"' || c === \"'\") { inStr = true; quoteChar = c; continue; }\n" +
+            "            if (c === '{') depth++;\n" +
+            "            else if (c === '}') {\n" +
+            "              depth--;\n" +
+            "              if (depth === 0) {\n" +
+            "                end = j;\n" +
+            "                break;\n" +
+            "              }\n" +
+            "            }\n" +
+            "          }\n" +
+            "          if (end !== -1) {\n" +
+            "            // 提取完整 JSON 并返回\n" +
+            "            var extracted = md.substring(start, end + 1);\n" +
+            "            return extracted;\n" +
+            "          }\n" +
+            "        }\n" +
+            "      }\n" +
+            "    }\n" +
+            "\n" +
             "    return md.length > 0 ? md : null;\n" +
             "  }\n" +
             "\n" +
