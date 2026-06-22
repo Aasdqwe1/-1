@@ -34,9 +34,12 @@ public class McpServer {
     private static final Pattern CONTROL_CHARS_PATTERN = 
         Pattern.compile("[\\x00\\x01-\\x08\\x0B-\\x0C\\x0E-\\x1F\\x7F-\\x9F]");
 
-    // 心跳检测超时时间（毫秒），用于长时间运行的工具调用
-    // 从 8 秒调整为 30 秒以支持长时间工具执行（如 HTTP 请求、文件操作、命令执行等）
+    // Heartbeat detection timeout (milliseconds) for long-running tool calls
+    // Adjusted from 8 seconds to 30 seconds to support long tool execution (HTTP requests, file operations, command execution, etc.)
     private static final long HEARTBEAT_TIMEOUT_MS = 30000L;
+    
+    // Timeout for waiting on heartbeat thread shutdown during exception recovery
+    private static final long HEARTBEAT_THREAD_JOIN_TIMEOUT_MS = 2000L;
 
     private int port;
     private ServerSocket serverSocket;
@@ -1122,20 +1125,22 @@ public class McpServer {
                             hb.interrupt();
                             // Wait for thread to end, but set timeout to prevent deadlock
                             try {
-                                hb.join(2000);
+                                hb.join(HEARTBEAT_THREAD_JOIN_TIMEOUT_MS);
                             } catch (InterruptedException ie) {
                                 Thread.currentThread().interrupt();
                             }
                         }
                     } catch (Exception ex) {
-                        log("Exception shutting down heartbeat thread: " + ex.getMessage());
+                        log("Exception shutting down heartbeat thread ("
+                            + ex.getClass().getName() + "): " + ex.getMessage());
                     }
                     
                     try {
                         // Flush all pending write tasks in the buffer
                         flushWriteHandler();
                     } catch (Exception ex) {
-                        log("Exception flushing write handler: " + ex.getMessage());
+                        log("Exception flushing write handler ("
+                            + ex.getClass().getName() + "): " + ex.getMessage());
                     }
                     
                     try {
@@ -1143,7 +1148,8 @@ public class McpServer {
                         log("Sending streaming terminator...");
                         endChunked(out);
                     } catch (Exception ex) {
-                        log("Exception sending terminator: " + ex.getMessage());
+                        log("Exception sending terminator ("
+                            + ex.getClass().getName() + "): " + ex.getMessage());
                     }
                     
                     return; // Streaming path ended, return
