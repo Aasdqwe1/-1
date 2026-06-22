@@ -252,27 +252,40 @@ public class DeepSeekChatBridge {
             "    if (window[__prefix + 'obs']) window[__prefix + 'obs'].disconnect();\n" +
             "  } catch(_e) {}\n" +
             "\n" +
-            "  // ===== A. 基线：当前已有多少条 AI 消息 =====\n" +
-            "  // 选择器顺序基于解析字段对照表优化：\n" +
-            "  //   1) ds-markdown.ds-assistant-message-main-content（精确内容容器）\n" +
-            "  //   2) ds-markdown--block（块级 markdown 输出）\n" +
-            "  //   3) [class*=ds-markdown]（任意 markdown 元素）\n" +
-            "  //   4) ds-message（消息级 wrapper，内部查找 markdown）\n" +
-            "  //   5) 通用回退\n" +
+            "  // ===== A. 查找所有 AI 消息内容容器 =====\n" +
+            "  // 多策略扫描：从最精确到最宽泛，任何一种匹配到就返回。\n" +
+            "  // 同时返回 DOM NodeList，避免单一选择器偶发失效。\n" +
             "  function getAssistantMessages() {\n" +
+            "    // 策略1：精确内容容器（DeepSeek v1 渲染路径）\n" +
             "    var list = document.querySelectorAll('.ds-markdown.ds-assistant-message-main-content');\n" +
             "    if (list && list.length > 0) return list;\n" +
-            "    list = document.querySelectorAll('.ds-markdown--block');\n" +
-            "    if (list && list.length > 0) return list;\n" +
+            "    // 策略2：ds-assistant-message-main-content 独立类（不含 ds-markdown 的场景）\n" +
             "    list = document.querySelectorAll('[class*=\"ds-assistant-message-main-content\"]');\n" +
             "    if (list && list.length > 0) return list;\n" +
+            "    // 策略3：ds-markdown--block 块级容器\n" +
+            "    list = document.querySelectorAll('.ds-markdown--block');\n" +
+            "    if (list && list.length > 0) return list;\n" +
+            "    // 策略4：ds-markdown 任意级（可能包含 assistant+system+user，但后面只扫描最后几条即可）\n" +
             "    list = document.querySelectorAll('[class*=\"ds-markdown\"]');\n" +
             "    if (list && list.length > 0) return list;\n" +
-            "    list = document.querySelectorAll('[class*=\"ds-assistant-message\"]');\n" +
-            "    if (list && list.length > 0) return list;\n" +
+            "    // 策略5：ds-message 外层 wrapper，内部取 markdown/content 子节点\n" +
+            "    var msgs = document.querySelectorAll('[class*=\"ds-message\"]');\n" +
+            "    if (msgs && msgs.length > 0) {\n" +
+            "      // 对每个消息容器，再查其内容子节点，组成一个人工数组返回\n" +
+            "      var collected = [];\n" +
+            "      for (var mi = 0; mi < msgs.length; mi++) {\n" +
+            "        var inner = msgs[mi].querySelector('[class*=\"ds-markdown\"], [class*=\"assistant-message\"], [class*=\"content\"], [class*=\"body\"]');\n" +
+            "        if (inner) collected.push(inner);\n" +
+            "      }\n" +
+            "      if (collected.length > 0) return collected;\n" +
+            "    }\n" +
+            "    // 策略6：通用 assistant/message 关键词\n" +
             "    list = document.querySelectorAll('[class*=\"assistant-message-main\"]');\n" +
             "    if (list && list.length > 0) return list;\n" +
-            "    return document.querySelectorAll('[class*=\"assistant-message\"], [class*=\"prose\"], .whitespace-pre-wrap, article, [role=\"article\"]');\n" +
+            "    list = document.querySelectorAll('[class*=\"assistant-message\"]');\n" +
+            "    if (list && list.length > 0) return list;\n" +
+            "    // 策略7：最兜底\n" +
+            "    return document.querySelectorAll('[class*=\"message\"][class*=\"assistant\"], [class*=\"prose\"], .whitespace-pre-wrap, article, [role=\"article\"]');\n" +
             "  }\n" +
             "\n" +
             "  // 结构化分析元素内容：统计各类标签数量，便于调试内容一致性\n" +
@@ -482,80 +495,108 @@ public class DeepSeekChatBridge {
             "\n" +
             "  // ===== C. 是否仍在生成 =====\n" +
             "  function isGenerating() {\n" +
-            "    // 第1步：检查 typing/loading/thinking 指示器\n" +
+            "    // 第1步：检查 typing/loading/thinking 指示器（覆盖多语言/多样式）\n" +
             "    var typing = document.querySelector('[class*=\"typing\"]') ||\n" +
             "                  document.querySelector('[class*=\"loading\"]') ||\n" +
             "                  document.querySelector('[class*=\"thinking\"]') ||\n" +
             "                  document.querySelector('[class*=\"Thinking\"]') ||\n" +
-            "                  document.querySelector('[aria-busy=\"true\"]');\n" +
+            "                  document.querySelector('[class*=\"thinking-block\"]') ||\n" +
+            "                  document.querySelector('[class*=\"thinking_block\"]') ||\n" +
+            "                  document.querySelector('[class*=\"ai-thinking\"]') ||\n" +
+            "                  document.querySelector('[aria-busy=\"true\"]') ||\n" +
+            "                  document.querySelector('[aria-busy=\"loading\"]') ||\n" +
+            "                  document.querySelector('[class*=\"cursor\"]') ||\n" +
+            "                  document.querySelector('[class*=\"streaming\"]');\n" +
             "    if (typing) return true;\n" +
             "    \n" +
-            "    // 第2步：检查所有圆形primary按钮（停止按钮是圆形的）\n" +
-            "    // 修复：之前只检查第一个primary按钮，可能找错了；现在专门找圆形的primary按钮\n" +
+            "    // 第2步：检查所有圆形primary按钮（停止按钮 = 正在生成）\n" +
             "    var circlePrimaryBtns = document.querySelectorAll('div[role=\"button\"][class*=\"ds-button--circle\"][class*=\"ds-button--primary\"]');\n" +
-            "    if (circlePrimaryBtns && circlePrimaryBtns.length > 0) {\n" +
-            "      // 找到了圆形的primary按钮 = 停止按钮 = 正在生成\n" +
-            "      return true;\n" +
-            "    }\n" +
-            "    \n" +
-            "    // 第3步：检查所有primary按钮的SVG（备用方案）\n" +
-            "    // 有些版本可能按钮不是圆形的，或者类名有变化\n" +
-            "    var allPrimaryBtns = document.querySelectorAll('div[role=\"button\"][class*=\"ds-button--primary\"]');\n" +
-            "    for (var k = 0; k < allPrimaryBtns.length; k++) {\n" +
-            "      var btn = allPrimaryBtns[k];\n" +
-            "      var svg = btn.querySelector('svg');\n" +
-            "      if (svg) {\n" +
-            "        var pathEl = svg.querySelector('path');\n" +
-            "        if (pathEl) {\n" +
-            "          var pathD = pathEl.getAttribute('d') || '';\n" +
-            "          // 停止图标特征：方块形状（M2 4.88 开头的矩形路径）\n" +
-            "          if (pathD.indexOf('M2 4.88') !== -1 ||\n" +
-            "              pathD.indexOf('M 2 4.88') !== -1 ||\n" +
-            "              pathD.indexOf('4.88 2') !== -1 ||\n" +
-            "              pathD.indexOf('stop') !== -1 ||\n" +
-            "              pathD.indexOf('rect') !== -1) {\n" +
-            "            return true;\n" +
-            "          }\n" +
-            "        }\n" +
-            "        // 备用：检查SVG内部是否有rect元素\n" +
-            "        if (svg.querySelector('rect')) return true;\n" +
+            "    if (circlePrimaryBtns && circlePrimaryBtns.length > 0) return true;\n" +
+            "    // 同时检查非圆形的 primary 按钮（有些版本按钮 class 可能不同）\n" +
+            "    var primaryBtns = document.querySelectorAll('div[role=\"button\"][class*=\"ds-button--primary\"]');\n" +
+            "    if (primaryBtns && primaryBtns.length > 0) {\n" +
+            "      for (var ki = 0; ki < primaryBtns.length; ki++) {\n" +
+            "        var bt = primaryBtns[ki];\n" +
+            "        // 检查是否为停止/暂停按钮（文本或icon）\n" +
+            "        var t = (bt.innerText || bt.getAttribute('aria-label') || '').trim();\n" +
+            "        if (t && /停止|stop|暂停|pause|中断/.test(t)) return true;\n" +
             "      }\n" +
             "    }\n" +
             "    \n" +
-            "    // 第4步：检查最后一条消息的文本\n" +
-            "    var last = document.querySelector('.ds-assistant-message-main-content:last-child');\n" +
-            "    if (last) {\n" +
-            "      var lt = (last.innerText || '').trim();\n" +
-            "      if (lt.length > 0 && lt.length < 60) {\n" +
-            "        if (/…|\\.{2,}|正在|思考|生成|处理/.test(lt)) return true;\n" +
+            "    // 第3步：检查SVG路径是否包含矩形/正方形图标（停止图标）\n" +
+            "    var allBtns = document.querySelectorAll('div[role=\"button\"][class*=\"ds-button--primary\"]');\n" +
+            "    for (var k2 = 0; k2 < allBtns.length; k2++) {\n" +
+            "      var b2 = allBtns[k2];\n" +
+            "      var sv = b2.querySelector('svg');\n" +
+            "      if (sv) {\n" +
+            "        // 检查多个 path（有些图标是多个 path 组成）\n" +
+            "        var paths = sv.querySelectorAll('path');\n" +
+            "        if (paths && paths.length > 0) {\n" +
+            "          for (var pIdx = 0; pIdx < paths.length; pIdx++) {\n" +
+            "            var pd = paths[pIdx].getAttribute('d') || '';\n" +
+            "            // 停止图标：正方形/矩形路径\n" +
+            "            if (pd.indexOf('M2 4.88') !== -1 ||\n" +
+            "                pd.indexOf('M 2 4.88') !== -1 ||\n" +
+            "                pd.indexOf('4.88 2') !== -1 ||\n" +
+            "                pd.indexOf('stop') !== -1 ||\n" +
+            "                pd.indexOf('rect') !== -1 ||\n" +
+            "                pd.indexOf('M0 ') !== -1) {\n" +
+            "              return true;\n" +
+            "            }\n" +
+            "          }\n" +
+            "        }\n" +
+            "        if (sv.querySelector('rect')) return true;\n" +
+            "        // 有些图标用 rect 代替 path\n" +
+            "        if (sv.querySelector('rect[height]')) return true;\n" +
+            "      }\n" +
+            "    }\n" +
+            "    \n" +
+            "    // 第4步：检查最后一条消息末尾的文本/状态关键词\n" +
+            "    var last2 = document.querySelector('[class*=\"ds-assistant-message-main-content\"]:last-child, [class*=\"ds-markdown\"]:last-child, [class*=\"assistant-message\"]:last-child');\n" +
+            "    if (last2) {\n" +
+            "      var lt2 = (last2.innerText || last2.textContent || '').trim();\n" +
+            "      if (lt2.length > 0 && lt2.length < 80) {\n" +
+            "        if (/…|\\.{2,}|正在|思考|生成|处理|thinking|loading|typing/.test(lt2)) return true;\n" +
             "      }\n" +
             "    }\n" +
             "    \n" +
             "    return false;\n" +
             "  }\n" +
             "\n" +
-            "  // 检测发送按钮是否处于可发送状态（没有暂停/停止图标）\n" +
+            "  // 检测发送按钮是否可发送（无停止/暂停图标）\n" +
             "  function isSendButtonReady() {\n" +
-            "    // 修复：检查所有primary按钮，只要有一个是停止按钮就返回false\n" +
             "    var allPrimaryBtns = document.querySelectorAll('div[role=\"button\"][class*=\"ds-button--primary\"]');\n" +
-            "    if (!allPrimaryBtns || allPrimaryBtns.length === 0) return false;\n" +
-            "    for (var k = 0; k < allPrimaryBtns.length; k++) {\n" +
-            "      var btn = allPrimaryBtns[k];\n" +
-            "      var svg = btn.querySelector('svg');\n" +
+            "    if (!allPrimaryBtns || allPrimaryBtns.length === 0) {\n" +
+            "      // 没有找到primary按钮，可能是样式变化——检查是否有发送按钮icon\n" +
+            "      var sendIcon = document.querySelector('div[role=\"button\"] svg path[d*=\"M12 19\"]') ||\n" +
+            "                     document.querySelector('div[role=\"button\"] svg path[d*=\"send\"]') ||\n" +
+            "                     document.querySelector('div[role=\"button\"] svg path[d*=\"arrow\"]') ||\n" +
+            "                     document.querySelector('div[role=\"button\"] svg path[d*=\"M0\"]');\n" +
+            "      if (sendIcon) return true;\n" +
+            "      return false;\n" +
+            "    }\n" +
+            "    for (var k3 = 0; k3 < allPrimaryBtns.length; k3++) {\n" +
+            "      var btn3 = allPrimaryBtns[k3];\n" +
+            "      // 检查innerText（按钮文字可能是"停止"）\n" +
+            "      var bt = (btn3.innerText || btn3.getAttribute('aria-label') || '').trim();\n" +
+            "      if (bt && /停止|stop|暂停|pause|中断/.test(bt)) return false;\n" +
+            "      var svg = btn3.querySelector('svg');\n" +
             "      if (svg) {\n" +
-            "        var pathEl = svg.querySelector('path');\n" +
-            "        if (pathEl) {\n" +
-            "          var pathD = pathEl.getAttribute('d') || '';\n" +
-            "          // 停止图标特征：方块形状（M2 4.88 开头的矩形路径）\n" +
-            "          if (pathD.indexOf('M2 4.88') !== -1 ||\n" +
-            "              pathD.indexOf('M 2 4.88') !== -1 ||\n" +
-            "              pathD.indexOf('4.88 2') !== -1 ||\n" +
-            "              pathD.indexOf('stop') !== -1 ||\n" +
-            "              pathD.indexOf('rect') !== -1) {\n" +
-            "            return false; // 检测到停止图标，按钮未就绪\n" +
+            "        // 检查SVG内的多个path\n" +
+            "        var pList = svg.querySelectorAll('path');\n" +
+            "        if (pList && pList.length > 0) {\n" +
+            "          for (var p2 = 0; p2 < pList.length; p2++) {\n" +
+            "            var d2 = pList[p2].getAttribute('d') || '';\n" +
+            "            if (d2.indexOf('M2 4.88') !== -1 ||\n" +
+            "                d2.indexOf('M 2 4.88') !== -1 ||\n" +
+            "                d2.indexOf('4.88 2') !== -1 ||\n" +
+            "                d2.indexOf('stop') !== -1 ||\n" +
+            "                d2.indexOf('rect') !== -1 ||\n" +
+            "                d2.indexOf('M0 ') !== -1) {\n" +
+            "              return false;\n" +
+            "            }\n" +
             "          }\n" +
             "        }\n" +
-            "        // 备用：检查SVG内部是否有rect元素\n" +
             "        if (svg.querySelector('rect')) return false;\n" +
             "      }\n" +
             "    }\n" +
@@ -579,37 +620,42 @@ public class DeepSeekChatBridge {
             "    var list = getAssistantMessages();\n" +
             "    var gen = isGenerating();\n" +
             "\n" +
-            "    // 没有任何AI消息，继续等待\n" +
+            "    // 没有任何AI消息，继续等待（动态超时：如果生成指示器仍在，允许更长时间）\n" +
             "    if (list.length === 0) {\n" +
-            "      // 超时时间从 240 (2分钟) 增加到 600 (5分钟)，支持更长的生成时间\n" +
-            "      if (pollCount > 600) {\n" +
+            "      var maxWait = gen ? 1800 : 600; // 生成中允许15分钟，否则5分钟\n" +
+            "      if (pollCount > maxWait) {\n" +
             "        finish('');\n" +
-            "        Android.onDeepSeekError(__rid, '超时：未捕获到任何AI消息');\n" +
+            "        Android.onDeepSeekError(__rid, '超时：未捕获到任何AI消息（pollCount=' + pollCount + '）');\n" +
             "      }\n" +
             "      return;\n" +
             "    }\n" +
             "\n" +
-            "    // 检查是否有新消息（数量增加 或 最后一条内容变化）\n" +
+            "    // 检查是否有新消息：数量增加，或最后一条内容变化且长度>0\n" +
+            "    // 改进：只要lastContent.length比上次记录大，就认为有新内容（流式追加场景）\n" +
             "    var lastEl = list[list.length - 1];\n" +
             "    var lastContent = getAssistantReply(lastEl) || '';\n" +
-            "    var hasNewMessage = detectedNewMessage ||\n" +
-            "                       (list.length > initialMsgCount) ||\n" +
-            "                       (list.length === initialMsgCount && lastContent !== initialLastContent && lastContent.length > 0);\n" +
+            "    var msgCountChanged = list.length > initialMsgCount;\n" +
+            "    var contentChanged = lastContent.length > 0 && lastContent !== initialLastContent;\n" +
+            "    var contentGrew = lastContent.length > initialLastContent.length; // 内容长度增长\n" +
+            "    var hasNewMessage = detectedNewMessage || msgCountChanged || contentChanged || contentGrew;\n" +
             "\n" +
             "    // 没有新消息，继续等待\n" +
             "    if (!hasNewMessage) {\n" +
             "      // 每4次轮询（约2秒）主动扫描，以防主选择器漏检\n" +
             "      if (pollCount % 4 === 0) {\n" +
             "        var forceTxt = getAssistantReplyFallback();\n" +
-            "        if (forceTxt && forceTxt !== initialLastContent) {\n" +
+            "        if (forceTxt && forceTxt.length > 5 && forceTxt !== initialLastContent) {\n" +
             "          Android.log('[DEBUG][' + __rid + '] 强制扫描发现新内容，长度=' + forceTxt.length);\n" +
             "          detectedNewMessage = true;\n" +
             "          initialLastContent = forceTxt;\n" +
+            "          // 主动恢复：更新lastEl为最后一条消息\n" +
+            "          lastContent = forceTxt;\n" +
             "        }\n" +
             "      }\n" +
             "      if (!detectedNewMessage) {\n" +
-            "        // 超时时间从 240 (2分钟) 增加到 600 (5分钟)，支持更长的生成时间\n" +
-            "        if (pollCount > 600) {\n" +
+            "        // 动态超时：如果生成指示器仍在，允许更长等待\n" +
+            "        var maxWait2 = gen ? 1800 : 900; // 生成中允许15分钟，否则4.5分钟\n" +
+            "        if (pollCount > maxWait2) {\n" +
             "          // 超时前最后一次备用提取\n" +
             "          var lastTry = getAssistantReplyFallback();\n" +
             "          if (lastTry && lastTry.length > 5) {\n" +
@@ -618,7 +664,7 @@ public class DeepSeekChatBridge {
             "            return;\n" +
             "          }\n" +
             "          finish('');\n" +
-            "          Android.onDeepSeekError(__rid, '超时未捕获到新回复');\n" +
+            "          Android.onDeepSeekError(__rid, '超时未捕获到新回复（pollCount=' + pollCount + '）');\n" +
             "        }\n" +
             "        return;\n" +
             "      }\n" +
@@ -769,10 +815,18 @@ public class DeepSeekChatBridge {
             "          } else {\n" +
             "            Android.log('[DEBUG][' + __rid + '] UI显示已停止但内容刚停止增长，继续观察（stableCount=' + jsonStableCount + '/30）');\n" +
             "          }\n" +
-            "        } else if (pollCount > 1200) {\n" +
-            "          // 最后防护：10分钟后仍在生成状态，则强制停止（防止无限等待）\n" +
-            "          Android.log('[DEBUG][' + __rid + '] TIMEOUT: LLM仍在生成但超过10分钟限制（pollCount=' + pollCount + '）');\n" +
-            "          Android.onDeepSeekError(__rid, '流式传输超时（LLM生成超过10分钟）');\n" +
+            "        } else if (pollCount > 3600 && !contentGrowing) {\n" +
+            "          // 动态超时：只有当内容停止增长时才超时（防止长思考阶段被误判）\n" +
+            "          // 上限30分钟（3600 * 500ms），超过且内容停止增长时才强制停止\n" +
+            "          Android.log('[DEBUG][' + __rid + '] TIMEOUT: 内容停止增长且超过30分钟（pollCount=' + pollCount + '）');\n" +
+            "          Android.onDeepSeekError(__rid, '流式传输超时（LLM生成超过30分钟）');\n" +
+            "          if (window[__prefix + 'poll']) clearInterval(window[__prefix + 'poll']);\n" +
+            "          if (window[__prefix + 'obs']) { try { window[__prefix + 'obs'].disconnect(); } catch(_e) {} }\n" +
+            "          finished = true;\n" +
+            "        } else if (pollCount > 7200) {\n" +
+            "          // 绝对上限：60分钟后不管什么状态都停止（防止无限等待）\n" +
+            "          Android.log('[DEBUG][' + __rid + '] TIMEOUT: 绝对上限60分钟（pollCount=' + pollCount + '）');\n" +
+            "          Android.onDeepSeekError(__rid, '流式传输超时（超过60分钟绝对上限）');\n" +
             "          if (window[__prefix + 'poll']) clearInterval(window[__prefix + 'poll']);\n" +
             "          if (window[__prefix + 'obs']) { try { window[__prefix + 'obs'].disconnect(); } catch(_e) {} }\n" +
             "          finished = true;\n" +
@@ -787,11 +841,10 @@ public class DeepSeekChatBridge {
             "\n" +
             "    // ========== 以下为普通回复（非工具调用）的完成判定 ==========\n" +
             "\n" +
-            "    // 内容太短，继续等待\n" +
+            "    // 内容太短，继续等待（动态超时）\n" +
             "    if (!reply || reply.length < 2) {\n" +
-            "      // 超时时间从 240 (2分钟) 增加到 600 (5分钟)，支持更长的生成时间\n" +
-            "      if (pollCount > 600) {\n" +
-            "        // 超时前尝试备用提取\n" +
+            "      var maxWaitEmpty = gen ? 1800 : 900;\n" +
+            "      if (pollCount > maxWaitEmpty) {\n" +
             "        var fallbackEmpty = getAssistantReplyFallback();\n" +
             "        if (fallbackEmpty && fallbackEmpty.length > 5) {\n" +
             "          Android.log('[DEBUG][' + __rid + '] 空内容超时前备用提取成功，长度=' + fallbackEmpty.length);\n" +
@@ -799,7 +852,7 @@ public class DeepSeekChatBridge {
             "          return;\n" +
             "        }\n" +
             "        finish('');\n" +
-            "        Android.onDeepSeekError(__rid, '超时：AI消息内容为空');\n" +
+            "        Android.onDeepSeekError(__rid, '超时：AI消息内容为空（pollCount=' + pollCount + '）');\n" +
             "      }\n" +
             "      return;\n" +
             "    }\n" +
@@ -821,19 +874,32 @@ public class DeepSeekChatBridge {
             "      completionStartTime = 0;\n" +
             "    }\n" +
             "\n" +
-            "    // 完成判定：采用冷却机制，内容稳定后再等 2.5 秒\n" +
+            "    // 完成判定：采用冷却机制，内容稳定后再等待（更长观察期，避免偶发卡顿导致过早结束）\n" +
             "    var MIN_LENGTH = 5;\n" +
-            "    var STABLE_WAIT_MS = 2500;\n" +
-            "    var stableLong = sameLenStable >= 12 && reply.length > MIN_LENGTH;\n" +
-            "    var stableShort = sameLenStable >= 3 && reply.length > 10;\n" +
+            "    var STABLE_WAIT_MS = 3500;\n" +
+            "    var stableLong = sameLenStable >= 16 && reply.length > MIN_LENGTH; // 16次=8秒稳定\n" +
+            "    var stableShort = sameLenStable >= 6 && reply.length > 200;         // 6次=3秒，但内容必须足够长\n" +
             "\n" +
+            "    // 关键增强：如果UI仍显示生成中，且内容仍在增长，不要提前结束\n" +
+            "    var shouldFinish = false;\n" +
             "    if (stableLong || stableShort) {\n" +
+            "      // 稳定条件满足，但再次验证UI状态：如果UI仍显示生成中，暂缓完成\n" +
+            "      if (!gen) {\n" +
+            "        shouldFinish = true; // UI已停止生成，可以完成\n" +
+            "      } else if (sameLenStable >= 30) {\n" +
+            "        // UI显示生成中但内容已稳定30次=15秒，可能是UI指示器残留\n" +
+            "        Android.log('[DEBUG][' + __rid + '] WARNING: UI仍显示生成中但内容已稳定15秒，强制完成');\n" +
+            "        shouldFinish = true;\n" +
+            "      }\n" +
+            "    }\n" +
+            "\n" +
+            "    if (shouldFinish) {\n" +
             "      if (!completionReady) {\n" +
             "        completionReady = true;\n" +
             "        completionStartTime = Date.now();\n" +
-            "        Android.log('[DEBUG][' + __rid + '] 普通回复内容已稳定，开始冷却计时');\n" +
+            "        Android.log('[DEBUG][' + __rid + '] 普通回复内容已稳定，开始冷却计时（3.5s）');\n" +
             "      } else if (Date.now() - completionStartTime > STABLE_WAIT_MS) {\n" +
-            "        Android.log('[DEBUG][' + __rid + '] 冷却结束，确认普通回复完成');\n" +
+            "        Android.log('[DEBUG][' + __rid + '] 冷却结束，确认普通回复完成（稳定次数=' + sameLenStable + '）');\n" +
             "        finish(reply);\n" +
             "        return;\n" +
             "      }\n" +
@@ -845,9 +911,10 @@ public class DeepSeekChatBridge {
             "      }\n" +
             "    }\n" +
             "\n" +
-            "    // 超时兜底（普通回复）：有部分内容就返回\n" +
-            "    // 超时时间从 240 (2分钟) 增加到 600 (5分钟)，支持更长的生成时间\n" +
-            "    if (pollCount > 600) {\n" +
+            "    // 超时兜底（普通回复）：动态超时（生成中=15分钟，否则=8分钟）\n" +
+            "    var maxWaitFinal = gen ? 1800 : 960;\n" +
+            "    if (pollCount > maxWaitFinal && reply && reply.length > 5) {\n" +
+            "      Android.log('[DEBUG][' + __rid + '] 最终超时兜底：有部分内容就返回（pollCount=' + pollCount + ', len=' + reply.length + '）');\n" +
             "      finish(reply || '');\n" +
             "    }\n" +
             "  }\n" +

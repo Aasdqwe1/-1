@@ -847,13 +847,21 @@ public class McpServer {
 
                             boolean completed = false;
                             try {
-                                completed = roundLatch.await(90, TimeUnit.SECONDS);
+                                // 动态超时：工具调用场景可能需要更长的LLM生成时间
+                                // 普通回复给600秒（10分钟），工具调用给更长时间
+                                // 注意：实际轮次结束由JavaScript端的pollOnce触发，这里只是兜底
+                                long waitSeconds = 600; // 默认10分钟
+                                if (round > 1) waitSeconds = 1800; // 后续轮次可能是工具调用，给30分钟
+                                log("轮次 " + currentRound + " 等待LLM回复（最大" + waitSeconds + "秒）");
+                                completed = roundLatch.await(waitSeconds, TimeUnit.SECONDS);
                             } catch (InterruptedException e) {
                                 Thread.currentThread().interrupt();
                                 break;
                             }
 
                             if (!completed) {
+                                // 超时：尝试从JavaScript端获取任何已有内容
+                                log("轮次 " + currentRound + " LLM回复超时（roundLatch.await超时）");
                                 JSONObject j = new JSONObject();
                                 j.put("error", "本轮回复超时");
                                 writeEventChunk(out, "error", j.toString());
@@ -861,14 +869,18 @@ public class McpServer {
                             }
 
                             if (roundErrorRef.get() != null) {
+                                log("轮次 " + currentRound + " 错误: " + roundErrorRef.get());
                                 break;
                             }
 
                             String reply = roundReplyRef.get();
                             if (reply == null || reply.isEmpty()) {
-                                log("轮次 " + round + " 回复为空，结束对话");
+                                log("轮次 " + round + " 回复为空，尝试获取备选内容后结束对话");
+                                // 空回复：不继续轮询，结束对话
                                 break;
                             }
+                            // 增加内容结构摘要日志（便于排查是否被截断）
+                            log("轮次 " + round + " 获取回复: " + analyzeReplyStructure(reply));
 
                             String toolJson = extractJsonRpcFromReply(reply);
                             if (toolJson == null) {
