@@ -212,77 +212,52 @@ public class MainActivity extends Activity {
     }
     
     /**
-     * 启动服务 - 使用前台服务保持应用活跃
+     * 启动服务 - 直接在Activity中启动
      */
     private void startServer() {
         try {
             appendLog("正在启动MCP服务...");
 
-            // Android 13+需要请求通知权限
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                    appendLog("请求通知权限...");
-                    requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1003);
-                    return;
-                }
-                appendLog("通知权限已授予");
-            }
-
-            Intent intent = new Intent(MainActivity.this, McpForegroundService.class);
-            appendLog("intent创建成功: " + intent);
-            appendLog("Build.VERSION: " + Build.VERSION.SDK_INT);
-            appendLog("Build.VERSION_CODES.O: " + Build.VERSION_CODES.O);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                appendLog("调用startForegroundService");
-                ComponentName result = startForegroundService(intent);
-                appendLog("startForegroundService返回: " + (result == null ? "null" : result.getClassName()));
-            } else {
-                appendLog("调用startService");
-                ComponentName result = startService(intent);
-                appendLog("startService返回: " + (result == null ? "null" : result.getClassName()));
-            }
-            appendLog("startForegroundService已调用");
-
-            // 等待服务启动，最多等待5秒
-            final long startTime = System.currentTimeMillis();
-            final long timeout = 5000;
-            handler.postDelayed(new Runnable() {
+            mcpServer = new McpServer(PORT, MainActivity.this);
+            mcpServer.setOnLogListener(new McpServer.OnLogListener() {
                 @Override
-                public void run() {
-                    McpForegroundService service = McpForegroundService.getInstance();
-                    if (service != null && service.getMcpServer() != null) {
-                        mcpServer = service.getMcpServer();
-                        mcpServer.setOnLogListener(new McpServer.OnLogListener() {
-                            @Override
-                            public void onLog(final String message) {
-                                handler.post(new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        appendLog(message);
-                                    }
-                                });
-                            }
-                        });
-                        tvStatus.setText("服务状态：运行中");
-                        tvAddress.setText("监听地址：http://" + mcpServer.getLocalIpAddress() + ":" + PORT);
-                        btnStart.setEnabled(false);
-                        btnStop.setEnabled(true);
-                        appendLog("MCP服务启动成功");
-                    } else if (System.currentTimeMillis() - startTime < timeout) {
-                        handler.postDelayed(this, 100);
-                    } else {
-                        String error = "服务启动超时(5秒)，instance=" + (service == null ? "null" : "not null");
-                        appendLog(error);
-                        copyToClipboard(error);
-                    }
+                public void onLog(final String message) {
+                    handler.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            appendLog(message);
+                        }
+                    });
                 }
-            }, 100);
+            });
+            mcpServer.start();
+
+            tvStatus.setText("服务状态：运行中");
+            tvAddress.setText("监听地址：http://" + mcpServer.getLocalIpAddress() + ":" + PORT);
+            btnStart.setEnabled(false);
+            btnStop.setEnabled(true);
+            appendLog("MCP服务启动成功");
 
         } catch (Exception e) {
             String error = "启动服务异常: " + e.getClass().getName() + "\n" + e.getMessage() + "\n\n堆栈:\n" + android.util.Log.getStackTraceString(e);
             appendLog(error);
             copyToClipboard(error);
         }
+    }
+
+    /**
+     * 停止服务
+     */
+    private void stopServer() {
+        if (mcpServer != null) {
+            mcpServer.stop();
+            mcpServer = null;
+        }
+
+        tvStatus.setText("服务状态：已停止");
+        tvAddress.setText("监听地址：--");
+        btnStart.setEnabled(true);
+        btnStop.setEnabled(false);
     }
 
     /**
@@ -300,27 +275,11 @@ public class MainActivity extends Activity {
     }
     
     /**
-     * 停止服务
-     */
-    private void stopServer() {
-        if (mcpServer != null) {
-            mcpServer = null;
-        }
-        stopService(new Intent(MainActivity.this, McpForegroundService.class));
-
-        tvStatus.setText("服务状态：已停止");
-        tvAddress.setText("监听地址：--");
-        btnStart.setEnabled(true);
-        btnStop.setEnabled(false);
-    }
-    
-    /**
      * 打开 DeepSeek 助手页面
      */
     private void openDeepSeek() {
         // 如果 MCP 服务没启动，先提示用户启动
-        McpForegroundService service = McpForegroundService.getInstance();
-        if (service == null || service.getMcpServer() == null) {
+        if (mcpServer == null || !mcpServer.isRunning()) {
             appendLog("提示：请先启动 MCP 服务，以便 DeepSeek 使用工具能力");
         }
 
