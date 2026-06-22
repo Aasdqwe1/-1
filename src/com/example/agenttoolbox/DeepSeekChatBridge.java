@@ -588,7 +588,7 @@ public class DeepSeekChatBridge {
             "    var hasStopIcon = false;\n" +
             "    for (var k3 = 0; k3 < allPrimaryBtns.length; k3++) {\n" +
             "      var btn3 = allPrimaryBtns[k3];\n" +
-            "      // 检查innerText（按钮文字可能是"停止"）\n" +
+            "      // 检查innerText（按钮文字可能是：停止/stop/暂停）\n" +
             "      var btText = (btn3.innerText || btn3.getAttribute('aria-label') || '').trim();\n" +
             "      if (btText && /停止|stop|暂停|pause|中断/.test(btText)) { hasStopIcon = true; continue; }\n" +
             "      var svg = btn3.querySelector('svg');\n" +
