@@ -1059,6 +1059,9 @@ public class McpServer {
                             writeEventChunk(out, "status", status.toString());
                         }
 
+                        // 刷新所有待处理的写入任务，确保所有块都已发送
+                        flushWriteHandler();
+                        // 然后发送 chunked 编码终止符
                         endChunked(out);
                         stopHeartbeat.set(true);
                         log("══════════ 对话结束，共 " + round + " 轮 ══════════");
@@ -1175,23 +1178,43 @@ public class McpServer {
             });
         }
 
-        private void endChunked(final OutputStream out) {
-            writeHandler.post(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        synchronized (out) {
-                            out.write("0\r\n\r\n".getBytes("UTF-8"));
-                            out.flush();
-                        }
-                    } catch (IOException e) {
-                        // Socket closed is expected when client disconnects, only log other IOExceptions
-                        if (!isSocketClosed(e)) {
-                            log("SSE结束写入异常: " + e.getMessage());
-                        }
+        /**
+         * 等待所有待处理的写入任务完成
+         * 确保在发送 chunked 编码终止符之前，所有的事件块都已经写入
+         */
+        private void flushWriteHandler() {
+            try {
+                final CountDownLatch latch = new CountDownLatch(1);
+                writeHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        latch.countDown();
                     }
+                });
+                // 等待同步任务完成，但设置超时以防止死锁（最多等待5秒）
+                latch.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log("flushWriteHandler 被中断: " + e.getMessage());
+            }
+        }
+
+        private void endChunked(final OutputStream out) {
+            try {
+                synchronized (out) {
+                    // 写入最终的 chunked 编码终止符（0\r\n\r\n）
+                    // 必须同步写入，确保在连接关闭前完成写入
+                    // 这是 HTTP chunked transfer encoding 的必需部分
+                    out.write("0\r\n\r\n".getBytes("UTF-8"));
+                    out.flush();
+                    log("已发送 chunked 编码终止符");
                 }
-            });
+            } catch (IOException e) {
+                // Socket closed is expected when client disconnects, only log other IOExceptions
+                if (!isSocketClosed(e)) {
+                    log("SSE结束写入异常: " + e.getMessage());
+                }
+            }
         }
 
         private String handleJsonRpcRequest(String requestBody) {
