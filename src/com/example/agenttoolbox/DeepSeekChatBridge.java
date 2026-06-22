@@ -336,23 +336,59 @@ public class DeepSeekChatBridge {
             "    return txt || null;\n" +
             "  }\n" +
             "\n" +
-            "  // HTML到Markdown的转换函数（基于解析字段对照表优化：识别 ds-markdown 内容容器内各类标签\n" +
+            "  // ===== HTML到Markdown的转换函数（P3修复：JSON保护+完整JSON提取）=====\n" +
             "  function htmlToMarkdown(html) {\n" +
             "    if (!html) return '';\n" +
             "    var md = html;\n" +
             "\n" +
-            "    // ===== 第1步：循环解码HTML实体直到稳定（处理双重/多重编码）=====\n" +
+            "  // ===== 第0步：检测并保护JSON区域 =====\n" +
+            "    var _protectedJson = [];\n" +
+            "    var _protectIdx = 0;\n" +
+            "    function _protectJson(text) {\n" +
+            "      if (!text || text.length === 0) return text;\n" +
+            "      if (text.indexOf('\"jsonrpc\"') === -1 && text.indexOf('\"jsonrpc\":') === -1\n" +
+            "        && text.indexOf('\"tools/call\"') === -1 && text.indexOf('\"method\"') === -1) {\n" +
+            "        return text;\n" +
+            "      }\n" +
+            "      var result = '';\n" +
+            "      var pos = 0;\n" +
+            "      while (pos < text.length) {\n" +
+            "        var braceStart = text.indexOf('{', pos);\n" +
+            "        if (braceStart === -1) { result += text.substring(pos); break; }\n" +
+            "        var inStr = false; var quoteCh = ''; var esc = false; var depth = 1; var end = -1;\n" +
+            "        for (var j = braceStart + 1; j < text.length; j++) {\n" +
+            "          var cc = text.charAt(j);\n" +
+            "          if (inStr) { if (esc) { esc = false; continue; } if (cc === '\\\\') { esc = true; continue; } if (cc === quoteCh) { inStr = false; continue; } continue; }\n" +
+            "          if (cc === '\"') { inStr = true; quoteCh = cc; continue; }\n" +
+            "          if (cc === '{') {\n" +
+            "            depth++;\n" +
+            "          } else if (cc === '}') { depth--; if (depth === 0) { end = j; break; } }\n" +
+            "        }\n" +
+            "        if (end !== -1) {\n" +
+            "          var potential = text.substring(braceStart, end + 1);\n" +
+            "          if (potential.indexOf('\"jsonrpc\"') !== -1 || potential.indexOf('\"tools/call\"') !== -1 || potential.indexOf('\"method\"') !== -1) {\n" +
+            "            var placeholder = '__JSON_PROTECTED_' + _protectIdx + '__';\n" +
+            "            _protectedJson[_protectIdx] = potential;\n" +
+            "            _protectIdx++;\n" +
+            "            result += text.substring(pos, braceStart) + placeholder;\n" +
+            "            pos = end + 1; continue;\n" +
+            "          }\n" +
+            "        }\n" +
+            "        result += text.substring(pos, braceStart + 1);\n" +
+            "        pos = braceStart + 1;\n" +
+            "      }\n" +
+            "      return result;\n" +
+            "    }\n" +
+            "    md = _protectJson(md);\n" +
+            "\n" +
+            "  // ===== 第1步：循环解码HTML实体直到稳定 =====\n" +
             "    var _prevMd;\n" +
             "    var _decodeIter = 0;\n" +
             "    do {\n" +
             "      _prevMd = md;\n" +
             "      md = md.replace(/&amp;/g, '&');\n" +
-            "      md = md.replace(/&#(\\d+);/g, function(m, num) {\n" +
-            "        return String.fromCharCode(parseInt(num, 10));\n" +
-            "      });\n" +
-            "      md = md.replace(/&#x([0-9a-fA-F]+);/g, function(m, hex) {\n" +
-            "        return String.fromCharCode(parseInt(hex, 16));\n" +
-            "      });\n" +
+            "      md = md.replace(/&#(\\d+);/g, function(m, num) { return String.fromCharCode(parseInt(num, 10)); });\n" +
+            "      md = md.replace(/&#x([0-9a-fA-F]+);/g, function(m, hex) { return String.fromCharCode(parseInt(hex, 16)); });\n" +
             "      md = md.replace(/&quot;/g, '\"');\n" +
             "      md = md.replace(/&#39;/g, \"'\");\n" +
             "      md = md.replace(/&lt;/g, '<');\n" +
@@ -361,8 +397,7 @@ public class DeepSeekChatBridge {
             "      _decodeIter++;\n" +
             "    } while (md !== _prevMd && _decodeIter < 5 && md.length > 0);\n" +
             "\n" +
-            "    // ===== 第2步：转换HTML标签为Markdown =====\n" +
-            "    // 先处理块级标签顺序：段落→标题→代码块→表格→列表→链接→行内代码\n" +
+            "  // ===== 第2步：转换HTML标签为Markdown =====\n" +
             "    md = md.replace(/<\\/p>/gi, '\\n\\n');\n" +
             "    md = md.replace(/<p[^>]*>/gi, '');\n" +
             "    md = md.replace(/<div[^>]*>/gi, '');\n" +
@@ -378,130 +413,44 @@ public class DeepSeekChatBridge {
             "    md = md.replace(/<h2[^>]*>([\\s\\S]*?)<\\/h2>/gi, '## $1\\n');\n" +
             "    md = md.replace(/<h3[^>]*>([\\s\\S]*?)<\\/h3>/gi, '### $1\\n');\n" +
             "    md = md.replace(/<h4[^>]*>([\\s\\S]*?)<\\/h4>/gi, '#### $1\\n');\n" +
-            "    md = md.replace(/<a\\s+href=[\"']([^\"']*)[\"'][^>]*>([\\s\\S]*?)<\\/a>/gi, '[$2]($1)');\n" +
-            "    // ===== 第2.5步：处理 DeepSeek 的复制/下载按钮 =====\n" +
-            "    // 目标：按钮保留但不混入代码块内容，转换为可点击格式\n" +
-            "    // 按钮出现场景：\n" +
-            "    //   1) <code>复制</code> / <code>下载</code> 作为独立段落\n" +
-            "    //   2) <button> 或 <div> 的复制/下载按钮 UI\n" +
-            "    // 先处理按钮文字：转为可点击的 Markdown 格式\n" +
+            "    md = md.replace(/<a\\s+href=\"([^\"]*)\"[^>]*>([\\s\\S]*?)<\\/a>/gi, '[$2]($1)');\n" +
+            "    // 按钮处理\n" +
             "    md = md.replace(/<code[^>]*>(复制|下载|copy|download)<\\/code>/gi, '[**$1**]');\n" +
-            "    // 处理按钮作为独立段落：转为行内按钮（去除多余的 <p> 换行）\n" +
-            "    md = md.replace(/<p[^>]*>\\s*\\[\\*\\*(复制|下载|copy|download)\\*\\*\\]\\s*<\\/p>/gi, ' [**$1**]\\n');\n" +
-            "    // 按钮元素（button/div/span）：提取其中文字转为 Markdown 按钮格式\n" +
-            "    md = md.replace(/<button[^>]*class=\"[^\"]*copy[^\"]*\"[^>]*>([\\s\\S]*?)<\\/button>/gi, '[**复制**]');\n" +
-            "    md = md.replace(/<button[^>]*class=\"[^\"]*download[^\"]*\"[^>]*>([\\s\\S]*?)<\\/button>/gi, '[**下载**]');\n" +
             "    md = md.replace(/<button[^>]*>[\\s\\S]*?(复制|下载)[\\s\\S]*?<\\/button>/gi, '[**$1**]');\n" +
-            "    md = md.replace(/<div[^>]*class=\"[^\"]*copy[^\"]*\"[^>]*>([\\s\\S]*?)<\\/div>/gi, '[**复制**]');\n" +
-            "    md = md.replace(/<div[^>]*class=\"[^\"]*download[^\"]*\"[^>]*>([\\s\\S]*?)<\\/div>/gi, '[**下载**]');\n" +
-            "    md = md.replace(/<span[^>]*class=\"[^\"]*copy[^\"]*\"[^>]*>([\\s\\S]*?)<\\/span>/gi, '[**复制**]');\n" +
-            "    md = md.replace(/<span[^>]*class=\"[^\"]*download[^\"]*\"[^>]*>([\\s\\S]*?)<\\/span>/gi, '[**下载**]');\n" +
-            "    // 处理代码块：先移除/替换内部按钮，再提取纯代码内容\n" +
-            "    md = md.replace(/<pre[^>]*>([\\s\\S]*?)<\\/pre>/gi, function(m, preContent) {\n" +
-            "      var clean = preContent\n" +
-            "        .replace(/<button[^>]*>[\\s\\S]*?<\\/button>/gi, '')\n" +
-            "        .replace(/<div[^>]*class=\"[^\"]*copy[^\"]*\"[^>]*>[\\s\\S]*?<\\/div>/gi, '')\n" +
-            "        .replace(/<div[^>]*class=\"[^\"]*download[^\"]*\"[^>]*>[\\s\\S]*?<\\/div>/gi, '')\n" +
-            "        .replace(/<span[^>]*>[\\s\\S]*?(复制|下载)[\\s\\S]*?<\\/span>/gi, '')\n" +
-            "        .replace(/<code[^>]*>(复制|下载)<\\/code>/gi, '');\n" +
-            "      return '```\\n' + clean.trim() + '\\n```';\n" +
-            "    });\n" +
-            "    md = md.replace(/<pre[^>]*><code[^>]*>([\\s\\S]*?)<\\/code><\\/pre>/gi, function(m, codeContent) {\n" +
-            "      var clean = codeContent\n" +
-            "        .replace(/<button[^>]*>[\\s\\S]*?<\\/button>/gi, '')\n" +
-            "        .replace(/<span[^>]*>[\\s\\S]*?(复制|下载)[\\s\\S]*?<\\/span>/gi, '');\n" +
-            "      return '```\\n' + clean.trim() + '\\n```';\n" +
-            "    });\n" +
-            "    // 处理 DeepSeek 常用的 span 标签作为行内代码\n" +
-            "    // 先处理带 class 的代码样式 span（同时支持单双引号：\n" +
-            "    md = md.replace(/<span[^>]*class=\"[^\"]*(?:ds-markdown(?:--)?(?:inline-)?code|inline-code|inlineCode|markdown-code|code|ds-[a-zA-Z0-9-]*)[^\"]*\"[^>]*>([\\s\\S]*?)<\\/span>/gi, '`$1`');\n" +
-            "    md = md.replace(/<span[^>]*class='[^']*(?:ds-markdown(?:--)?(?:inline-)?code|inline-code|markdown-code|code)[^']*'[^>]*>([\\s\\S]*?)<\\/span>/gi, '`$1`');\n" +
-            "    md = md.replace(/<code[^>]*>([\\s\\S]*?)<\\/code>/gi, '`$1`');\n" +
-            "    // 改进表格为 Markdown 表格：处理 thead/tbody，并递归清理单元格内容\n" +
-            "    md = md.replace(/<table[^>]*>([\\s\\S]*?)<\\/table>/gi, function(match, tc) {\n" +
-            "      var rows = [];\n" +
-            "      // 首先剥掉 thead/tbody 包装标签，保留 tr 内容\n" +
-            "      tc = tc.replace(/<\\/?t(?:head|body)[^>]*>/gi, '');\n" +
-            "      tc.replace(/<tr[^>]*>([\\s\\S]*?)<\\/tr>/gi, function(trm, trc) {\n" +
-            "        var cells = [];\n" +
-            "        trc.replace(/<t[hd][^>]*>([\\s\\S]*?)<\\/t[hd]>/gi, function(_, cell) {\n" +
-            "          // 清理单元格内部的 span/p/div/br 等内部标签的影响（DeepSeek 常把代码样式内容放 span/p/div/br 里）\n" +
-            "          // 先把单元格内容的其他标签清理：把里面的 span/p/div/br/等\n" +
-            "          var cleanCell = (cell || '').trim();\n" +
-            "          // 递归调用内部的 span/p/div/br 的影响\n" +
-            "          cleanCell = cleanCell.replace(/<span[^>]*>([\\s\\S]*?)<\\/span>/gi, '$1');\n" +
-            "          cleanCell = cleanCell.replace(/<p[^>]*>/gi, '');\n" +
-            "          cleanCell = cleanCell.replace(/<div>/gi, ' ');\n" +
-            "          cleanCell = cleanCell.replace(/<br[^>]*>/gi, ' ');\n" +
-            "          cleanCell = cleanCell.replace(/<[^>]+>/gi, '');\n" +
-            "          cells.push(cleanCell.trim());\n" +
-            "        });\n" +
-            "        if (cells.length > 0) rows.push(cells);\n" +
-            "        return trm;\n" +
-            "      });\n" +
-            "      if (rows.length < 1) return '';\n" +
-            "      var tableOut = '\\n';\n" +
-            "      // 第一行为表头\n" +
-            "      tableOut += '| ' + rows[0].join(' | ') + ' |\\n';\n" +
-            "      var separators = rows[0].map(function() { return '---'; });\n" +
-            "      tableOut += '| ' + separators.join(' | ') + ' |\\n';\n" +
-            "      for (var ti = 1; ti < rows.length; ti++) {\n" +
-            "        tableOut += '| ' + rows[ti].join(' | ') + ' |\\n';\n" +
-            "      }\n" +
-            "      tableOut += '\\n';\n" +
-            "      return tableOut;\n" +
-            "    });\n" +
-            "    // 移除其他HTML标签（span/p/div/br 等内部标签清理\n" +
+            "    // 移除其他HTML标签\n" +
             "    md = md.replace(/<[^>]+>/gi, '');\n" +
             "\n" +
-            "    // ===== 第3步：清理格式 =====\n" +
+            "  // ===== 第2.8步：恢复被保护的JSON内容 =====\n" +
+            "    if (_protectedJson.length > 0) {\n" +
+            "      for (var rj = 0; rj < _protectedJson.length; rj++) {\n" +
+            "        var ph = '__JSON_PROTECTED_' + rj + '__';\n" +
+            "        md = md.split(ph).join('\\n' + _protectedJson[rj] + '\\n');\n" +
+            "      }\n" +
+            "    }\n" +
+            "\n" +
+            "  // ===== 第3步：清理格式 =====\n" +
             "    md = md.replace(/\\n{3,}/g, '\\n\\n');\n" +
             "    md = md.trim();\n" +
             "\n" +
-            "    // ===== 第4步：工具调用 JSON 检测与提取 =====\n" +
-            "    // DeepSeek 有时将工具调用 JSON 嵌在 <span> 中，前面还有说明文字：\n" +
-            "    //   \"好的，我来生成...：\\n{\"jsonrpc\":\"2.0\",...}\"\n" +
-            "    // 此时需要独立提取 JSON，忽略前面的说明文字\n" +
+            "  // ===== 第4步：工具调用JSON检测与提取 =====\n" +
             "    if (md.indexOf('\"jsonrpc\"') !== -1 || md.indexOf('\"jsonrpc\":') !== -1) {\n" +
             "      var jsonIdx = md.indexOf('\"jsonrpc\"');\n" +
             "      if (jsonIdx === -1) jsonIdx = md.indexOf('\"jsonrpc\":');\n" +
             "      if (jsonIdx !== -1) {\n" +
-            "        // 向前找最近的 { 作为 JSON 起点\n" +
             "        var start = -1;\n" +
-            "        for (var i = jsonIdx; i >= 0; i--) {\n" +
-            "          if (md.charAt(i) === '{') {\n" +
-            "            start = i;\n" +
-            "            break;\n" +
-            "          }\n" +
-            "        }\n" +
+            "        for (var i = jsonIdx; i >= 0; i--) { if (md.charAt(i) === '{') { start = i; break; } }\n" +
             "        if (start !== -1) {\n" +
-            "          // 状态机向后扫描，跟踪字符串/转义/嵌套，找到匹配的 }\n" +
-            "          var inStr = false;\n" +
-            "          var quoteChar = '\"';\n" +
-            "          var esc = false;\n" +
-            "          var depth = 1;\n" +
-            "          var end = -1;\n" +
+            "          var inStr2 = false; var quoteChar2 = '\"'; var esc2 = false; var depth2 = 1; var end2 = -1;\n" +
             "          for (var j = start + 1; j < md.length; j++) {\n" +
-            "            var c = md.charAt(j);\n" +
-            "            if (inStr) {\n" +
-            "              if (esc) { esc = false; continue; }\n" +
-            "              if (c === '\\\\') { esc = true; continue; }\n" +
-            "              if (c === quoteChar) { inStr = false; continue; }\n" +
-            "              continue;\n" +
-            "            }\n" +
-            "            if (c === '\"' || c === \"'\") { inStr = true; quoteChar = c; continue; }\n" +
-            "            if (c === '{') depth++;\n" +
-            "            else if (c === '}') {\n" +
-            "              depth--;\n" +
-            "              if (depth === 0) {\n" +
-            "                end = j;\n" +
-            "                break;\n" +
-            "              }\n" +
-            "            }\n" +
+            "            var cc2 = md.charAt(j);\n" +
+            "            if (inStr2) { if (esc2) { esc2 = false; continue; } if (cc2 === '\\\\') { esc2 = true; continue; } if (cc2 === quoteChar2) { inStr2 = false; continue; } continue; }\n" +
+            "            if (cc2 === '\"') { inStr2 = true; quoteChar2 = cc2; continue; }\n" +
+            "            if (cc2 === '{') {\n" +
+            "              depth2++;\n" +
+            "            } else if (cc2 === '}') { depth2--; if (depth2 === 0) { end2 = j; break; } }\n" +
             "          }\n" +
-            "          if (end !== -1) {\n" +
-            "            // 提取完整 JSON 并返回\n" +
-            "            var extracted = md.substring(start, end + 1);\n" +
+            "          if (end2 !== -1) {\n" +
+            "            var extracted = md.substring(start, end2 + 1);\n" +
             "            return extracted;\n" +
             "          }\n" +
             "        }\n" +
@@ -510,6 +459,8 @@ public class DeepSeekChatBridge {
             "\n" +
             "    return md.length > 0 ? md : null;\n" +
             "  }\n" +
+            "\n" +
+            "\n" +
             "\n" +
             "  // 备用全页扫描（选择器与 getAssistantMessages 同步优化）\n" +
             "  function getAssistantReplyFallback() {\n" +

@@ -405,28 +405,54 @@ public class McpServer {
          * 
          * 改进方案：
          * 1. 如果 chunk 包含 "jsonrpc": 的 JSON 字段标记，立即认为是工具调用 JSON
-         * 2. 检查 chunk 是否以 { 开头并包含 "method" 字段
-         * 3. 检查是否包含 "tools/call" 标记
+         * 2. 检查 chunk 是否包含 "method" 字段和工具调用相关关键词
+         * 3. 支持"中文前缀 + JSON"的格式（LLM常先写说明再输出JSON）
+         * 4. 支持流式部分 JSON（如仅 "id":"xxx" 部分）
          * 这样可以在 JSON 流的早期阶段就禁用心跳，避免被心跳中断
          */
         private boolean isToolCallJson(String text) {
             if (text == null || text.length() == 0) return false;
             
-            // 检查 JSON-RPC 标记：查找 "jsonrpc": 的模式（JSON 字段标记）
-            // 这避免误匹配普通文本中的 "jsonrpc" 单词
-            if (text.indexOf("\"jsonrpc\":") != -1) {
-                return true;
+            // 快速检测：查找所有 JSON-RPC 相关标记
+            // 注意：text 可能是 "好的，我来生成...\n{\"jsonrpc\":\"2.0\",..." 格式
+            boolean hasJsonrpc = text.indexOf("\"jsonrpc\"") != -1 || text.indexOf("'jsonrpc'") != -1;
+            boolean hasToolsCall = text.indexOf("\"tools/call\"") != -1 || text.indexOf("'tools/call'") != -1;
+            boolean hasMethod = text.indexOf("\"method\"") != -1 || text.indexOf("'method'") != -1;
+            
+            if (hasJsonrpc && hasMethod) return true;
+            if (hasJsonrpc && hasToolsCall) return true;
+            if (hasMethod && hasToolsCall) return true;
+            
+            // 检测是否为部分流式 JSON（例如只有 "jsonrpc":"2.0","id":"..."）
+            if (hasJsonrpc && text.indexOf("\"id\"") != -1) return true;
+            if (hasJsonrpc && text.indexOf("'id'") != -1) return true;
+            
+            // 检测是否包含具体工具名（LLM 可能分段输出）
+            // 例如 "params":{"name":"file_write","arguments":{...}}
+            String[] toolNames = {"file_write", "file_read", "file_list", "python",
+                                   "shell", "http_request", "math_calculator", "cmd",
+                                   "web"};
+            for (String toolName : toolNames) {
+                if (text.indexOf("\"" + toolName + "\"") != -1
+                    || text.indexOf("name\":\"" + toolName + "\"") != -1
+                    || text.indexOf("name\": \"" + toolName + "\"") != -1) {
+                    // 必须同时有一些 JSON 结构标记，避免普通文本中的工具名误匹配
+                    if (text.indexOf("{") != -1 || text.indexOf("\"") != -1) {
+                        return true;
+                    }
+                }
             }
             
-            // 检查是否以 { 开头（JSON 对象的开始）并包含 "method" 字段
+            // 检测是否以 { 开头（JSON 对象的开始）并包含 "method" 字段
             String trimmed = text.trim();
-            if (trimmed.startsWith("{") && (text.indexOf("\"method\"") != -1 || text.indexOf("'method'") != -1)) {
-                return true;
-            }
-            
-            // 显式检查完整的工具调用标记
-            if (text.indexOf("\"tools/call\"") != -1) {
-                return true;
+            // 跳过中文前缀后检查是否以 { 开头
+            int braceIdx = trimmed.indexOf('{');
+            if (braceIdx != -1) {
+                String afterPrefix = trimmed.substring(braceIdx);
+                if (afterPrefix.indexOf("\"jsonrpc\"") != -1 || afterPrefix.indexOf("\"method\"") != -1
+                    || afterPrefix.indexOf("\"tools/call\"") != -1) {
+                    return true;
+                }
             }
             
             return false;
@@ -805,6 +831,19 @@ public class McpServer {
                                     public void onChunk(String chunk) {
                                         try {
                                             lastActivityAt.set(System.currentTimeMillis());
+                                            // 清理：去除 NUL 和控制字符（LLM 输出可能混入）
+                                            if (chunk != null) {
+                                                // 仅保留可打印字符、中文、换行
+                                                StringBuilder sb = new StringBuilder();
+                                                for (int ci = 0; ci < chunk.length(); ci++) {
+                                                    char c = chunk.charAt(ci);
+                                                    if (c == 0 || (c < 0x20 && c != '\n' && c != '\r' && c != '\t')) {
+                                                        continue; // 跳过控制字符
+                                                    }
+                                                    sb.append(c);
+                                                }
+                                                chunk = sb.toString();
+                                            }
                                             if (chunk != null && chunk.startsWith("[STATUS]")) {
                                                 log("  [轮次" + currentRound + "] [STATUS] " + chunk);
                                                 JSONObject j = new JSONObject();
@@ -837,7 +876,11 @@ public class McpServer {
                                             j.put("isToolCall", isToolCall);
                                             writeEventChunk(out, "chunk", j.toString());
                                         } catch (Exception e) {
-                                            log("  [轮次" + currentRound + "] chunk处理异常: " + e.getMessage());
+                                            log("  [轮次" + currentRound + "] chunk处理异常: "
+                                                + "类型=" + e.getClass().getName()
+                                                + " msg=" + (e.getMessage() == null ? "(null)" : e.getMessage())
+                                                + " chunk前200=" + truncateForLogging(chunk, 200));
+                                            log("  [轮次" + currentRound + "] 堆栈: " + android.util.Log.getStackTraceString(e));
                                         }
                                     }
 
@@ -877,7 +920,11 @@ public class McpServer {
                                             log("  [轮次" + currentRound + "] 轮次完成: 长度=" + (reply == null ? 0 : reply.length())
                                                 + " 类型=" + (isToolCall ? "【工具调用】" : "【文本回复】"));
                                         } catch (Exception e) {
-                                            log("  [轮次" + currentRound + "] onDone处理异常: " + e.getMessage());
+                                            log("  [轮次" + currentRound + "] onDone处理异常: "
+                                                + "类型=" + e.getClass().getName()
+                                                + " msg=" + (e.getMessage() == null ? "(null)" : e.getMessage())
+                                                + " reply前200=" + truncateForLogging(reply, 200));
+                                            log("  [轮次" + currentRound + "] 堆栈: " + android.util.Log.getStackTraceString(e));
                                         }
                                         roundLatch.countDown();
                                     }
@@ -898,7 +945,11 @@ public class McpServer {
                                             writeEventChunk(out, "error", j.toString());
                                             log("  [轮次" + currentRound + "] 错误: " + error);
                                         } catch (Exception e) {
-                                            log("  [轮次" + currentRound + "] onError处理异常: " + e.getMessage());
+                                            log("  [轮次" + currentRound + "] onError处理异常: "
+                                                + "类型=" + e.getClass().getName()
+                                                + " msg=" + (e.getMessage() == null ? "(null)" : e.getMessage())
+                                                + " error前200=" + truncateForLogging(error, 200));
+                                            log("  [轮次" + currentRound + "] 堆栈: " + android.util.Log.getStackTraceString(e));
                                         }
                                         roundLatch.countDown();
                                     }
@@ -1013,7 +1064,10 @@ public class McpServer {
                         .toString();
                 }
             } catch (Exception e) {
-                log("聊天请求处理异常: " + e.getMessage());
+                log("聊天请求处理异常: "
+                    + "类型=" + e.getClass().getName()
+                    + " msg=" + (e.getMessage() == null ? "(null)" : e.getMessage()));
+                log("聊天请求处理异常: 堆栈: " + android.util.Log.getStackTraceString(e));
                 try {
                     responseBody = new JSONObject()
                         .put("success", false)
