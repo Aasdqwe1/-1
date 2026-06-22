@@ -494,7 +494,12 @@ public class DeepSeekChatBridge {
             "  }\n" +
             "\n" +
             "  // ===== C. 是否仍在生成 =====\n" +
+            "  // 关键信号：.ds-button__background（生成中按钮的背景元素）= 正在生成\n" +
             "  function isGenerating() {\n" +
+            "    // 第0步（最优先）：检测 .ds-button__background — DeepSeek生成状态核心标识\n" +
+            "    var genBg = document.querySelector('.ds-button__background');\n" +
+            "    if (genBg) return true;\n" +
+            "\n" +
             "    // 第1步：检查 typing/loading/thinking 指示器（覆盖多语言/多样式）\n" +
             "    var typing = document.querySelector('[class*=\"typing\"]') ||\n" +
             "                  document.querySelector('[class*=\"loading\"]') ||\n" +
@@ -563,44 +568,62 @@ public class DeepSeekChatBridge {
             "    return false;\n" +
             "  }\n" +
             "\n" +
-            "  // 检测发送按钮是否可发送（无停止/暂停图标）\n" +
+            "  // 检测发送按钮是否可发送（无停止/暂停图标 = 生成已完毕）\n" +
+            "  // 关键信号：向上箭头（M8.3125开头 / L9 3.95717V15.0431 等 send-icon）= 回答完毕，可以发送\n" +
             "  function isSendButtonReady() {\n" +
             "    var allPrimaryBtns = document.querySelectorAll('div[role=\"button\"][class*=\"ds-button--primary\"]');\n" +
             "    if (!allPrimaryBtns || allPrimaryBtns.length === 0) {\n" +
-            "      // 没有找到primary按钮，可能是样式变化——检查是否有发送按钮icon\n" +
-            "      var sendIcon = document.querySelector('div[role=\"button\"] svg path[d*=\"M12 19\"]') ||\n" +
+            "      // 没有找到primary按钮，检查是否有发送按钮icon（兜底）\n" +
+            "      var sendIcon = document.querySelector('div[role=\"button\"] svg path[d*=\"M8.3125\"]') ||\n" +
+            "                     document.querySelector('div[role=\"button\"] svg path[d*=\"M12 19\"]') ||\n" +
             "                     document.querySelector('div[role=\"button\"] svg path[d*=\"send\"]') ||\n" +
             "                     document.querySelector('div[role=\"button\"] svg path[d*=\"arrow\"]') ||\n" +
             "                     document.querySelector('div[role=\"button\"] svg path[d*=\"M0\"]');\n" +
             "      if (sendIcon) return true;\n" +
             "      return false;\n" +
             "    }\n" +
+            "    // 是否有明确的发送按钮（向上箭头）\n" +
+            "    var hasSendIcon = false;\n" +
+            "    // 是否有明确的停止按钮\n" +
+            "    var hasStopIcon = false;\n" +
             "    for (var k3 = 0; k3 < allPrimaryBtns.length; k3++) {\n" +
             "      var btn3 = allPrimaryBtns[k3];\n" +
             "      // 检查innerText（按钮文字可能是"停止"）\n" +
-            "      var bt = (btn3.innerText || btn3.getAttribute('aria-label') || '').trim();\n" +
-            "      if (bt && /停止|stop|暂停|pause|中断/.test(bt)) return false;\n" +
+            "      var btText = (btn3.innerText || btn3.getAttribute('aria-label') || '').trim();\n" +
+            "      if (btText && /停止|stop|暂停|pause|中断/.test(btText)) { hasStopIcon = true; continue; }\n" +
             "      var svg = btn3.querySelector('svg');\n" +
             "      if (svg) {\n" +
-            "        // 检查SVG内的多个path\n" +
             "        var pList = svg.querySelectorAll('path');\n" +
             "        if (pList && pList.length > 0) {\n" +
             "          for (var p2 = 0; p2 < pList.length; p2++) {\n" +
             "            var d2 = pList[p2].getAttribute('d') || '';\n" +
+            "            // 停止图标：正方形/矩形路径\n" +
             "            if (d2.indexOf('M2 4.88') !== -1 ||\n" +
             "                d2.indexOf('M 2 4.88') !== -1 ||\n" +
             "                d2.indexOf('4.88 2') !== -1 ||\n" +
             "                d2.indexOf('stop') !== -1 ||\n" +
             "                d2.indexOf('rect') !== -1 ||\n" +
             "                d2.indexOf('M0 ') !== -1) {\n" +
-            "              return false;\n" +
+            "              hasStopIcon = true;\n" +
+            "              break;\n" +
+            "            }\n" +
+            "            // 发送图标：向上箭头（M8.3125 0.981587 开头 / 含 L9 3.95717V15.0431 等竖线）\n" +
+            "            if (d2.indexOf('M8.3125') !== -1 ||\n" +
+            "                d2.indexOf('15.0431') !== -1 ||\n" +
+            "                d2.indexOf('0.981587') !== -1 ||\n" +
+            "                d2.indexOf('M8.') !== -1) {\n" +
+            "              hasSendIcon = true;\n" +
+            "              break;\n" +
             "            }\n" +
             "          }\n" +
             "        }\n" +
-            "        if (svg.querySelector('rect')) return false;\n" +
+            "        if (svg.querySelector('rect')) hasStopIcon = true;\n" +
             "      }\n" +
             "    }\n" +
-            "    return true;\n" +
+            "    // 优先级：停止图标 > 发送图标 > 默认\n" +
+            "    if (hasStopIcon) return false;  // 还在生成中\n" +
+            "    if (hasSendIcon) return true;   // 已回答完毕\n" +
+            "    return true; // 兜底：无停止图标就认为就绪\n" +
             "  }\n" +
             "\n" +
             "  // ===== D. 主循环：每 500ms 检查是否新增了 AI 消息 =====\n" +
