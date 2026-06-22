@@ -166,6 +166,9 @@ public class McpServer {
         private Socket clientSocket;
         private Handler writeHandler;
         private HandlerThread writeThread;
+        private final Object writeLock = new Object();
+        private volatile int writeErrorCount = 0;
+        private static final int MAX_WRITE_ERRORS = 10;
 
         public ClientHandler(Socket socket) {
             this.clientSocket = socket;
@@ -1205,11 +1208,21 @@ public class McpServer {
         }
 
         private void writeEventChunk(final OutputStream out, final String type, final String jsonData) {
+            // 空值检查：防止 writeHandler 未就绪时调用导致 NPE
+            if (writeHandler == null || writeThread == null || !writeThread.isAlive()) {
+                log("SSE写入失败: writeHandler未就绪 (type=" + type + ")");
+                return;
+            }
+            // 错误过多时停止写入，避免无限重试
+            if (writeErrorCount >= MAX_WRITE_ERRORS) {
+                log("SSE写入失败: 错误次数超过上限 (" + MAX_WRITE_ERRORS + ")，停止写入");
+                return;
+            }
             writeHandler.post(new Runnable() {
                 @Override
                 public void run() {
                     try {
-                        synchronized (out) {
+                        synchronized (writeLock) {
                             String event = "event: " + type + "\n" + "data: " + jsonData + "\n\n";
                             byte[] data = event.getBytes("UTF-8");
                             out.write(Integer.toHexString(data.length).getBytes("UTF-8"));
@@ -1217,11 +1230,26 @@ public class McpServer {
                             out.write(data);
                             out.write("\r\n".getBytes("UTF-8"));
                             out.flush();
+                            // 写入成功，重置错误计数
+                            writeErrorCount = 0;
                         }
                     } catch (IOException e) {
-                        // Socket closed is expected when client disconnects, only log other IOExceptions
+                        // Socket closed is expected when client disconnects, only count and log other IOExceptions
                         if (!isSocketClosed(e)) {
-                            log("SSE写入异常: " + e.getMessage());
+                            writeErrorCount++;
+                            log("SSE写入异常 (第" + writeErrorCount + "次): " + e.getMessage()
+                                + " (type=" + type + ", dataLen=" + (jsonData == null ? 0 : jsonData.length()) + ")");
+                            // 错误次数过多时，尝试关闭连接
+                            if (writeErrorCount >= MAX_WRITE_ERRORS) {
+                                log("SSE写入错误次数过多，尝试关闭客户端连接");
+                                try {
+                                    if (clientSocket != null && !clientSocket.isClosed()) {
+                                        clientSocket.close();
+                                    }
+                                } catch (IOException ex) {
+                                    // ignore
+                                }
+                            }
                         }
                     }
                 }
@@ -1250,8 +1278,13 @@ public class McpServer {
         }
 
         private void endChunked(final OutputStream out) {
+            // 空值检查：防止 writeHandler 未就绪时调用导致 NPE
+            if (writeHandler == null || writeThread == null || !writeThread.isAlive()) {
+                log("SSE结束写入失败: writeHandler未就绪");
+                return;
+            }
             try {
-                synchronized (out) {
+                synchronized (writeLock) {
                     // 写入最终的 chunked 编码终止符（0\r\n\r\n）
                     // 必须同步写入，确保在连接关闭前完成写入
                     // 这是 HTTP chunked transfer encoding 的必需部分
