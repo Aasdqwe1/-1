@@ -427,52 +427,36 @@ public class McpServer {
          * 4. 支持流式部分 JSON（如仅 "id":"xxx" 部分）
          * 这样可以在 JSON 流的早期阶段就禁用心跳，避免被心跳中断
          */
+        /**
+         * Check if text contains JSON-RPC 2.0 format (with optional spacing and quote variants)
+         */
+        private boolean hasJsonRpc20Format(String text) {
+            // Check for double quotes with 2.0 version
+            if (text.indexOf("\"jsonrpc\":\"2.0\"") != -1 || text.indexOf("\"jsonrpc\": \"2.0\"") != -1) {
+                return true;
+            }
+            // Also check for single quotes (valid in JavaScript contexts)
+            if (text.indexOf("'jsonrpc':'2.0'") != -1 || text.indexOf("'jsonrpc': '2.0'") != -1) {
+                return true;
+            }
+            return false;
+        }
+
         private boolean isToolCallJson(String text) {
             if (text == null || text.length() == 0) return false;
             
-            // 快速检测：查找所有 JSON-RPC 相关标记
-            // 注意：text 可能是 "好的，我来生成...\n{\"jsonrpc\":\"2.0\",..." 格式
-            boolean hasJsonrpc = text.indexOf("\"jsonrpc\"") != -1 || text.indexOf("'jsonrpc'") != -1;
+            // Check for JSON-RPC 2.0 format (requires strict version check)
+            boolean hasJsonrpc20 = hasJsonRpc20Format(text);
+            if (!hasJsonrpc20) {
+                return false;
+            }
+            
+            // Check for tools/call or method fields to confirm it's a tool call
             boolean hasToolsCall = text.indexOf("\"tools/call\"") != -1 || text.indexOf("'tools/call'") != -1;
             boolean hasMethod = text.indexOf("\"method\"") != -1 || text.indexOf("'method'") != -1;
             
-            if (hasJsonrpc && hasMethod) return true;
-            if (hasJsonrpc && hasToolsCall) return true;
-            if (hasMethod && hasToolsCall) return true;
-            
-            // 检测是否为部分流式 JSON（例如只有 "jsonrpc":"2.0","id":"..."）
-            if (hasJsonrpc && text.indexOf("\"id\"") != -1) return true;
-            if (hasJsonrpc && text.indexOf("'id'") != -1) return true;
-            
-            // 检测是否包含具体工具名（LLM 可能分段输出）
-            // 例如 "params":{"name":"file_write","arguments":{...}}
-            String[] toolNames = {"file_write", "file_read", "file_list", "python",
-                                   "shell", "http_request", "math_calculator", "cmd",
-                                   "web"};
-            for (String toolName : toolNames) {
-                if (text.indexOf("\"" + toolName + "\"") != -1
-                    || text.indexOf("name\":\"" + toolName + "\"") != -1
-                    || text.indexOf("name\": \"" + toolName + "\"") != -1) {
-                    // 必须同时有一些 JSON 结构标记，避免普通文本中的工具名误匹配
-                    if (text.indexOf("{") != -1 || text.indexOf("\"") != -1) {
-                        return true;
-                    }
-                }
-            }
-            
-            // 检测是否以 { 开头（JSON 对象的开始）并包含 "method" 字段
-            String trimmed = text.trim();
-            // 跳过中文前缀后检查是否以 { 开头
-            int braceIdx = trimmed.indexOf('{');
-            if (braceIdx != -1) {
-                String afterPrefix = trimmed.substring(braceIdx);
-                if (afterPrefix.indexOf("\"jsonrpc\"") != -1 || afterPrefix.indexOf("\"method\"") != -1
-                    || afterPrefix.indexOf("\"tools/call\"") != -1) {
-                    return true;
-                }
-            }
-            
-            return false;
+            // Must have either tools/call or method to be a valid tool call
+            return hasToolsCall || hasMethod;
         }
 
         private String extractJsonRpcFromReply(String reply) {
@@ -1027,6 +1011,11 @@ public class McpServer {
 
                             String toolJson = extractJsonRpcFromReply(reply);
                             if (toolJson == null) {
+                                // 检查：如果 chunks 中被检测到工具调用但最终无法提取，需要警告
+                                if (reply.indexOf("\"jsonrpc\"") != -1 || reply.indexOf("\"method\"") != -1 || reply.indexOf("\"tools/call\"") != -1) {
+                                    log("  [轮次" + currentRound + "] ⚠ 警告: 回复中检测到工具调用标记但无法提取有效JSON");
+                                    log("  [轮次" + currentRound + "]   └─ 回复内容: " + truncateForLogging(reply, 500));
+                                }
                                 finalDone = true;
                                 log("  [轮次" + currentRound + "] ═══ 对话完成，无更多工具调用 ═══");
                                 break;
