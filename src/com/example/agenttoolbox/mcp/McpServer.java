@@ -1006,6 +1006,9 @@ public class McpServer {
                         // Save heartbeat thread reference for cleanup during exception handling
                         heartbeatThread = heartbeat;
 
+                        // Track streaming lifetime for elapsed time calculation
+                        final long streamingStartTime = System.currentTimeMillis();
+
                         // Conversation loop
                         String currentMessage = message;
                         int maxRounds = 10;
@@ -1269,13 +1272,14 @@ public class McpServer {
                         
                         // Stream completion markers - 流完成标记
                         if (ENABLE_STREAM_DEBUG) {
+                            long totalElapsedMs = System.currentTimeMillis() - streamingStartTime;
                             log("════════════════════════════════════════════════════════════");
                             log("【流完成】Streaming lifecycle end:");
                             log("  ├─ 总轮数: " + round);
                             log("  ├─ 完成方式: " + (finalDone ? "正常完成（无更多工具调用）" : "达到最大轮数"));
                             log("  ├─ 心跳线程状态: " + (heartbeatThread != null && heartbeatThread.isAlive() ? "运行中" : "已停止"));
                             log("  ├─ 工具流状态: " + (inToolCallStream.get() ? "仍在工具模式" : "已离开工具模式"));
-                            log("  └─ 总用时: " + (System.currentTimeMillis() - System.currentTimeMillis()) + " ms");
+                            log("  └─ 总用时: " + totalElapsedMs + " ms (" + (totalElapsedMs / 1000.0) + " 秒)");
                             log("════════════════════════════════════════════════════════════");
                         }
                         
