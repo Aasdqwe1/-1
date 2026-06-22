@@ -193,29 +193,45 @@ public class MainActivity extends Activity {
     }
     
     /**
-     * 启动服务
+     * 启动服务 - 使用前台服务保持应用活跃
      */
     private void startServer() {
         try {
-            mcpServer = new McpServer(PORT, MainActivity.this);
-            mcpServer.setOnLogListener(new McpServer.OnLogListener() {
+            Intent intent = new Intent(MainActivity.this, McpForegroundService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent);
+            } else {
+                startService(intent);
+            }
+
+            // 等待服务启动
+            handler.postDelayed(new Runnable() {
                 @Override
-                public void onLog(final String message) {
-                    handler.post(new Runnable() {
-                        @Override
-                        public void run() {
-                            appendLog(message);
-                        }
-                    });
+                public void run() {
+                    McpForegroundService service = McpForegroundService.getInstance();
+                    if (service != null && service.getMcpServer() != null) {
+                        mcpServer = service.getMcpServer();
+                        mcpServer.setOnLogListener(new McpServer.OnLogListener() {
+                            @Override
+                            public void onLog(final String message) {
+                                handler.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        appendLog(message);
+                                    }
+                                });
+                            }
+                        });
+                        tvStatus.setText("服务状态：运行中");
+                        tvAddress.setText("监听地址：http://" + mcpServer.getLocalIpAddress() + ":" + PORT);
+                        btnStart.setEnabled(false);
+                        btnStop.setEnabled(true);
+                    } else {
+                        handler.postDelayed(this, 100);
+                    }
                 }
-            });
-            mcpServer.start();
-            
-            tvStatus.setText("服务状态：运行中");
-            tvAddress.setText("监听地址：http://" + mcpServer.getLocalIpAddress() + ":" + PORT);
-            btnStart.setEnabled(false);
-            btnStop.setEnabled(true);
-            
+            }, 100);
+
         } catch (Exception e) {
             appendLog("启动服务失败: " + e.getMessage());
         }
@@ -226,10 +242,10 @@ public class MainActivity extends Activity {
      */
     private void stopServer() {
         if (mcpServer != null) {
-            mcpServer.stop();
             mcpServer = null;
         }
-        
+        stopService(new Intent(MainActivity.this, McpForegroundService.class));
+
         tvStatus.setText("服务状态：已停止");
         tvAddress.setText("监听地址：--");
         btnStart.setEnabled(true);
@@ -241,10 +257,11 @@ public class MainActivity extends Activity {
      */
     private void openDeepSeek() {
         // 如果 MCP 服务没启动，先提示用户启动
-        if (!McpServer.isServiceRunning()) {
+        McpForegroundService service = McpForegroundService.getInstance();
+        if (service == null || service.getMcpServer() == null) {
             appendLog("提示：请先启动 MCP 服务，以便 DeepSeek 使用工具能力");
         }
-        
+
         Intent intent = new Intent(MainActivity.this, DeepSeekActivity.class);
         startActivity(intent);
     }

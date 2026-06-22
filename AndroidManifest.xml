@@ -6,7 +6,7 @@
 
     <uses-sdk
         android:minSdkVersion="21"
-        android:targetSdkVersion="30" />
+        android:targetSdkVersion="35" />
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -17,6 +17,11 @@
         android:maxSdkVersion="29" />
     <!-- Android 11+ 全局存储管理权限（需要用户在设置中手动授权） -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <!-- WakeLock：防止CPU休眠，保持服务活跃 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 前台服务权限 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MCP_SERVICE" />
 
     <application
         android:allowBackup="true"
@@ -39,6 +44,14 @@
             android:name=".DeepSeekActivity"
             android:label="DeepSeek 智能助手"
             android:configChanges="orientation|screenSize|keyboardHidden" />
+
+        <!-- MCP前台服务 -->
+        <service
+            android:name=".McpForegroundService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="mcpService"
+            android:stopWithTask="false" />
     </application>
 
 </manifest>

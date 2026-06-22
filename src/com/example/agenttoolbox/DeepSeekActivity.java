@@ -468,8 +468,8 @@ public class DeepSeekActivity extends Activity {
      */
     private void updateMcpStatus() {
         // 检查 MCP 服务是否在运行
-        // 这里简单显示，实际可以通过绑定服务来获取状态
-        boolean mcpRunning = McpServer.isServiceRunning();
+        McpForegroundService service = McpForegroundService.getInstance();
+        boolean mcpRunning = (service != null && service.getMcpServer() != null);
 
         if (mcpRunning) {
             tvMcpStatus.setText("MCP: 运行中");
