@@ -1950,6 +1950,187 @@
             }
         }
 
+        function isTruncated(text) {
+            if (!text || text.length < 50) return false;
+            var t = text.trim();
+            if (t.match(/[。.!?！？\n]$/)) return false;
+            if (t.match(/```$/)) return true;
+            if (t.match(/[-*+]\s.*$/m)) return true;
+            if (t.match(/\d+\.\s.*$/m)) return true;
+            if (t.match(/[，,；;：:]$/)) return true;
+            return false;
+        }
+
+        function addContinueButton(contentEl, lastText) {
+            var labelEl = contentEl.querySelector('.message-label');
+            if (!labelEl) return;
+            var existing = labelEl.querySelector('.continue-btn');
+            if (existing) existing.remove();
+
+            var btn = document.createElement('button');
+            btn.className = 'continue-btn';
+            btn.textContent = '继续生成';
+            btn.style.cssText = 'margin-left:8px; padding:2px 10px; font-size:11px; border-radius:12px; border:1px solid #cbd5e1; background:#f8fafc; color:#475569; cursor:pointer;';
+            btn.onmouseover = function() { this.style.background = '#e2e8f0'; };
+            btn.onmouseout = function() { this.style.background = '#f8fafc'; };
+            btn.onclick = function() {
+                btn.disabled = true;
+                btn.textContent = '生成中…';
+                continueDeepSeek(lastText, contentEl, btn);
+            };
+            labelEl.appendChild(btn);
+        }
+
+        async function continueDeepSeek(lastText, contentEl, btn) {
+            var bubbleEl = contentEl.querySelector('.message-bubble');
+            if (!bubbleEl) return;
+
+            var streamContent = lastText;
+            var renderTimer = null;
+            var pendingRender = false;
+
+            function scheduleRender() {
+                if (renderTimer) {
+                    pendingRender = true;
+                    return;
+                }
+                renderTimer = setTimeout(function() {
+                    renderTimer = null;
+                    if (pendingRender) {
+                        pendingRender = false;
+                        scheduleRender();
+                    }
+                    if (streamContent) {
+                        try {
+                            bubbleEl.innerHTML = '<div class="md-body">' + renderMarkdown(streamContent) + '</div>';
+                        } catch (e) {
+                            bubbleEl.textContent = streamContent;
+                        }
+                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                    }
+                }, 120);
+            }
+
+            setSessionStatus('继续生成中…');
+            var setState = function(t) {
+                var s = document.getElementById('dsStreamState');
+                if (s) s.textContent = t;
+            };
+
+            try {
+                var url = getServerUrl();
+                var res = await fetch(url + '/api/chat/send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: '请继续刚才的回答，接着往下写，不要重复已有的内容' })
+                });
+
+                var contentType = (res.headers.get('Content-Type') || '').toLowerCase();
+                var isStream = contentType.includes('text/event-stream');
+
+                if (!isStream) {
+                    var data = await res.json();
+                    if (data && (data.success !== false) && (data.reply || (data.data && data.data.reply))) {
+                        var reply = data.reply || (data.data && data.data.reply) || '';
+                        streamContent = lastText + reply;
+                        bubbleEl.innerHTML = '<div class="md-body">' + renderMarkdown(streamContent) + '</div>';
+                        setState('完成');
+                    } else {
+                        addSystemMessage('继续失败: ' + (data.error || '未知错误'));
+                    }
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                    if (btn) { btn.remove(); }
+                    setSessionStatus('就绪');
+                    return;
+                }
+
+                setState('继续中');
+                var reader = res.body.getReader();
+                var decoder = new TextDecoder('utf-8');
+                var buffer = '';
+                var eventName = '';
+                var dataLines = [];
+                var finalContent = '';
+                var gotDone = false;
+
+                var flushEvent = function() {
+                    if (dataLines.length === 0) {
+                        eventName = '';
+                        return;
+                    }
+                    var payload = dataLines.join('\n');
+                    dataLines = [];
+                    var obj = null;
+                    try { obj = JSON.parse(payload); } catch (e) { obj = null; }
+
+                    if (eventName === 'chunk') {
+                        if (obj && typeof obj.content === 'string') {
+                            streamContent = lastText + obj.content;
+                            scheduleRender();
+                        }
+                    } else if (eventName === 'done') {
+                        gotDone = true;
+                        if (obj && typeof obj.content === 'string') {
+                            finalContent = obj.content;
+                        }
+                    }
+                    eventName = '';
+                };
+
+                while (true) {
+                    var chunk = await reader.read();
+                    if (chunk.done) break;
+                    buffer += decoder.decode(chunk.value, { stream: true });
+                    var idx;
+                    while ((idx = buffer.indexOf('\n\n')) !== -1) {
+                        var raw = buffer.substring(0, idx);
+                        buffer = buffer.substring(idx + 2);
+                        var lines = raw.split('\n');
+                        for (var li = 0; li < lines.length; li++) {
+                            var line = lines[li];
+                            if (line.indexOf(':') === -1) continue;
+                            var colon = line.indexOf(':');
+                            var field = line.substring(0, colon);
+                            var val = line.substring(colon + 1);
+                            if (val.charAt(0) === ' ') val = val.substring(1);
+                            if (field === 'event') eventName = val;
+                            else if (field === 'data') dataLines.push(val);
+                        }
+                        flushEvent();
+                    }
+                }
+
+                if (!gotDone) {
+                    if (!streamContent || streamContent === lastText) {
+                        addSystemMessage('继续生成失败');
+                    }
+                }
+
+                if (renderTimer) {
+                    clearTimeout(renderTimer);
+                    renderTimer = null;
+                }
+
+                var displayText = finalContent ? (lastText + finalContent) : streamContent;
+                if (displayText && displayText !== lastText) {
+                    bubbleEl.innerHTML = '<div class="md-body">' + renderMarkdown(displayText) + '</div>';
+                    addContinueButton(contentEl, displayText);
+                }
+
+                setState('完成');
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            } catch (e) {
+                addSystemMessage('继续失败: ' + e.message);
+                setState('失败');
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = '继续生成';
+                }
+            } finally {
+                setSessionStatus('就绪');
+            }
+        }
+
         async function sendToDeepSeek(text) {
             addUserMessage(text);
             setSessionStatus('连接中…');
@@ -2193,6 +2374,7 @@
                 let displayText = finalContent || streamContent;
                 if (displayText && displayText.indexOf('🔧') !== 0) {
                     bubbleEl.innerHTML = '<div class="md-body">' + renderMarkdown(displayText) + '</div>';
+                    addContinueButton(contentEl, displayText);
                 }
                 chatMessages.scrollTop = chatMessages.scrollHeight;
             } catch (e) {
