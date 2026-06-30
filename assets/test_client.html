@@ -2019,9 +2019,34 @@
                 let lastLen = 0;
                 let gotContent = false;
                 let gotDone = false;
-                let finalContent = '';    // 保存最终文本（非工具调用）用于 Markdown 渲染
-                let finalToolCall = '';   // 保存工具调用 JSON（用于用户参考）
+                let finalContent = '';
+                let finalToolCall = '';
                 let hasToolCallDetected = false;
+                let streamContent = '';
+                let renderTimer = null;
+                let pendingRender = false;
+
+                function scheduleRender() {
+                    if (renderTimer) {
+                        pendingRender = true;
+                        return;
+                    }
+                    renderTimer = setTimeout(() => {
+                        renderTimer = null;
+                        if (pendingRender) {
+                            pendingRender = false;
+                            scheduleRender();
+                        }
+                        if (streamContent && !hasToolCallDetected) {
+                            try {
+                                bubbleEl.innerHTML = '<div class="md-body">' + renderMarkdown(streamContent) + '</div>';
+                            } catch (e) {
+                                bubbleEl.textContent = streamContent;
+                            }
+                            chatMessages.scrollTop = chatMessages.scrollHeight;
+                        }
+                    }, 120);
+                }
 
                 const flushEvent = () => {
                     if (dataLines.length === 0) {
@@ -2058,9 +2083,9 @@
                                 }
                             } else {
                                 if (content.length > lastLen || content.length >= lastLen - 20) {
-                                    // 小的波动也允许（有时字符串末尾会被轻微修剪）
-                                    bubbleEl.textContent = content;
+                                    streamContent = content;
                                     lastLen = content.length;
+                                    scheduleRender();
                                 }
                                 gotContent = true;
                             }
@@ -2156,28 +2181,18 @@
                 }
 
                 if (!gotDone) {
-                    // 流被提前关闭但没收到 done
                     if (!gotContent) addSystemMessage('流异常结束，未收到完整回复');
                     setState('结束');
                 }
 
-                // 最后：用 Markdown 渲染完整文本（finalContent 是最后一段非工具调用的 done 内容）
-                // 如果 finalContent 为空，则退回到 bubbleEl 当前已显示的文本
-                let displayText = finalContent;
-                if (!displayText && bubbleEl.textContent) {
-                    displayText = bubbleEl.textContent;
+                if (renderTimer) {
+                    clearTimeout(renderTimer);
+                    renderTimer = null;
                 }
-                if (displayText) {
-                    // 若是"正在调用工具…"类提示且无真正内容，保持原样
-                    if (displayText.indexOf('🔧') === 0 && !finalContent) {
-                        // 保留工具调用提示，不覆盖
-                    } else {
-                        var rendered = renderMarkdown(displayText);
-                        console.log('[DEBUG-HTML] renderMarkdown返回值:', rendered ? rendered.substring(0, 200) : '(空)');
-                        bubbleEl.innerHTML = '<div class="md-body">' + rendered + '</div>';
-                        console.log('[DEBUG-HTML] 设置后innerHTML:', bubbleEl.innerHTML ? bubbleEl.innerHTML.substring(0, 200) : '(空)');
-                        console.log('[DEBUG-HTML] 设置后innerText:', bubbleEl.innerText ? bubbleEl.innerText.substring(0, 200) : '(空)');
-                    }
+
+                let displayText = finalContent || streamContent;
+                if (displayText && displayText.indexOf('🔧') !== 0) {
+                    bubbleEl.innerHTML = '<div class="md-body">' + renderMarkdown(displayText) + '</div>';
                 }
                 chatMessages.scrollTop = chatMessages.scrollHeight;
             } catch (e) {
